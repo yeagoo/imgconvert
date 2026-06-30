@@ -6,10 +6,10 @@
 > 参考依据见 [REFERENCES.md](REFERENCES.md),引擎/打包设计见 [ENGINE.md](ENGINE.md)。
 
 > ⚠️ **架构决策(2026-06-29 转向「混合架构」;2026-06-29 二轮:三方评审 + 用户拍板后修订)**:
-> - **引擎**:放弃 libvips CLI,改为**进程内宽松许可 Rust 编解码 crate**——JPEG `mozjpeg`、PNG `oxipng`、WebP `webp`(libwebp)、**AVIF `libavif-sys`(codec-rav1e 默认,采 DropWebP 路线)**、解码/容器 `image`。C 编解码器构建期静态链接。**HEIC 走系统原生(macOS ImageIO / Windows WIC),Linux v1 不含 HEIC**。
-> - **平台优先级(已改)**:**Linux 优先**(Debian/Ubuntu/Fedora;.deb/.rpm/AppImage + Flathub);macOS、Windows 商店为后续阶段。**但架构必须为商店留门**:无子进程、纯宽松许可、文件访问抽象成「用户显式授权目录」(兼容 macOS security-scoped bookmark / Flatpak portal)。
+> - **引擎**:放弃 libvips CLI,改为**进程内宽松许可 Rust 编解码 crate**——JPEG `mozjpeg`、PNG `oxipng`、WebP `webp`(libwebp)、**AVIF `libavif-sys`(codec-rav1e 默认,采 DropWebP 路线)**、解码/容器 `image`。C 编解码器构建期静态链接。**主程序不内置 HEIC**;macOS/Windows 可走系统原生,另预留独立进程 HEIC 插件/helper(单独 LGPL 分发,decode-only)。
+> - **平台优先级(已改)**:**Linux 优先**(Debian/Ubuntu/Fedora;.deb/.rpm/AppImage + Flathub);macOS、Windows 商店为后续阶段。**但架构必须为商店留门**:主程序核心无子进程、纯宽松许可、文件访问抽象成「用户显式授权目录」(兼容 macOS security-scoped bookmark / Flatpak portal)。可选 HEIC helper 属主包外直发增强,商店构建默认禁用。
 > - **许可证**:**Apache-2.0**(已从 AGPL 切换完毕);`deny.toml` 禁止 GPL/AGPL/LGPL;`imagequant`(GPL)→ `color_quant`,`dssim`(AGPL)→ `ssimulacra2`。
-> - **格式(v1)**:JPEG/PNG/WebP/AVIF(全平台 crate);HEIC 按平台能力(Linux 无);TIFF/JXL 推后。
+> - **格式(v1)**:JPEG/PNG/WebP/AVIF(全平台 crate);HEIC 主包不内置,可选插件作为后续增强;TIFF/JXL 推后。
 > - **三方评审已纳入的修正**:见文末「评审修正清单」。
 
 ## 阶段总览
@@ -19,6 +19,7 @@
 | **P0** | UI/UX 外壳 | 界面、交互、设计系统全部可见可点(后端可先用 mock 或最小 core) |
 | **P0.5** | 技术尖刺(并行) | core crate / C 工具链 / AVIF 后端 / 许可清单 / **文件访问抽象(为商店留门)**,避免返工 |
 | **P1** | 拖拽 + 批量 + 真实转换 | 拖拽、并发批量(rav1e `threads=1` 防 oversubscribe)、进度(Channel)、取消 |
+| **P1.5** | 可选 codec 插件 | HEIC 外部 helper 协议、系统依赖探测、decode-only 插件 |
 | **P2** | 高级压缩与保真 | 自动质量(**仅 JPEG/WebP**)、ICC/EXIF 透传、代际防护 |
 | **P3** | 发布(Linux 优先) | **.deb/.rpm/AppImage + Flathub**;macOS(直分发→MAS)、Windows(→MS Store)后续阶段 |
 
@@ -85,6 +86,7 @@
 - [x] **进度/取消协议**:Tauri **Channel** + `CancellationToken` 最小闭环。当前 `convert_batch` 串行执行,取消在文件边界生效;P1 再接文件级并发/信号量/内存预算。
 - [ ] **最小 CI**:`cargo fmt --check`、`cargo clippy`、`cargo test`、`cargo deny check`、`pnpm run check`、`pnpm run build`。
 - [ ] **(macOS 阶段)系统 HEIC 尖刺**:`objc2`/`core-graphics` 调 ImageIO 读写 HEIC,**且必须在 App Sandbox 内验证编码成功**(评审:沙盒内 HEVC 编码能否用需实测)。
+- [ ] **HEIC 外部插件协议尖刺(P1.5 候选)**:主程序只做 manifest 发现 + 独立进程调用 + 能力矩阵合并;Linux 插件优先检测系统 `heif-convert`/`heif-dec`,Windows 插件可单独打包 decode-only helper。主程序依赖树继续禁 GPL/AGPL/LGPL;插件单独 LGPL 分发,第一版只读 HEIC/HEIF,不写 HEIC。
 - [ ] **(macOS 阶段)rav1e arm64 实测**:M 系列上 benchmark AVIF speed 8/10,对比 ImageIO/svt-av1,再锁默认值(评审 #2,最重要的待实测项)。
 - [ ] **(macOS 阶段)security-scoped bookmark shim**:**Tauri 无内建支持**(核心 issue [#3716](https://github.com/tauri-apps/tauri/issues/3716) 自 2022 至今未解)→ 需自写 `objc2` 的 `startAccessingSecurityScopedResource`/`stop` 生命周期(忘 stop 会泄漏内核资源并丢失越沙盒能力)。这是「用户显式授权目录」抽象的 macOS 落地。`tauri-plugin-dialog` 能返回 bookmark 数据,但 start/stop 自理。MAS 本身已验证可行(官方文档 + 真实上架案例)。
 
@@ -102,9 +104,22 @@
 - [x] 导入 ping 尺寸/DPI(当前尺寸 + PNG `pHYs`/JPEG JFIF DPI;失败不阻断导入)
 - [x] 异步生成缩略图(视口懒加载 + 并发 2 + Blob URL 生命周期清理)
 - [x] **原子写 + 保留时间戳 + 保留目录结构**(原子临时文件写入已落地;目录导入保留相对目录;输出 best-effort 保留源 mtime;写失败会提示并清理半成品)
-- [ ] HEIC:⚠️ **v1(Linux)不含 HEIC**(Codex:此处与 Linux-first 冲突已修正);macOS/Windows 的系统原生 HEIC 是**后续平台阶段**任务(见 P3 + ENGINE.md §3)
+- [ ] HEIC:⚠️ **主程序 v1 不内置 HEIC**;macOS/Windows 系统原生 HEIC 是**后续平台阶段**任务。Linux/Windows 可通过 P1.5 外部插件/helper 做 decode-only 可选增强,不作为 P1 阻塞项(见 ENGINE.md §3 / LEGAL.md)。
 - [x] **文件可靠性最小闭环**:失败清理半成品;同名冲突策略;**EXIF orientation 真旋正**;超大图内存预算/降并发;符号链接/权限错误友好处理;传参**传路径不传字节**。
 - [ ] **ICC/EXIF 元数据保真**:完整透传或容器级显式剥离审计(见 ENGINE.md §5),放入 P2 保真阶段。
+
+---
+
+## P1.5 — 可选 Codec 插件(HEIC decode-only)
+
+目标:在不污染 Apache-2.0 主依赖树的前提下,让用户显式安装后启用 HEIC/HEIF 导入。
+
+- [ ] **插件协议**:定义 manifest(`id/protocol/license/readable/writable/mode`)、能力发现、版本兼容、错误码;主程序把插件能力合并到 `capabilities()` 但标记为 optional/provider。
+- [ ] **独立进程 helper 调用**:禁止 `dlopen` 到主进程;使用 argv/JSON/stdin/stdout/临时文件。helper 路径只允许受信任安装目录或用户显式选择,禁止从图片目录自动执行同名文件。
+- [ ] **Linux helper**:优先调用系统 `heif-convert`/`heif-dec`;Debian/Ubuntu 提示安装 `libheif-examples`,Fedora 提示 `libheif-tools`/`heif-pixbuf-loader` 与可能需要 RPM Fusion `libheif-freeworld`。`heif-gdk-pixbuf`/`heif-thumbnailer` 只影响 GTK/文件管理器,不能当作 core 能力。
+- [ ] **Windows helper**:系统路线先探测 WIC + HEIF/HEVC 扩展;免费插件路线可自带 `imgconvert-heic-helper.exe + libheif/libde265` decode-only 动态库。不要直接打包现成 MSYS2 `libheif` 发行包,因依赖组合可能带 `x265`/GPL;必须自建并审计。
+- [ ] **许可与专利文案**:插件单独 LGPL 分发并提供源码/NOTICE;第一版只声明 HEIC/HEIF 输入,不提供 HEIC 输出;UI 文案写「通过可选插件导入 HEIC」,不写“开箱支持 HEIC”。
+- [ ] **渠道边界**:外部 helper 默认只面向直发包/用户自行安装场景;App Store/MS Store/Flathub 构建默认禁用,除非后续证明渠道允许这种扩展模型。
 
 ---
 
@@ -131,13 +146,13 @@
 **v1(Linux):**
 - [ ] CI 矩阵:Linux × **amd64 + arm64**;C 工具链 NASM + cmake/meson/ninja(见 ENGINE.md §4)
 - [ ] 打包:**.deb(Debian/Ubuntu)+ .rpm(Fedora)+ AppImage**;注意各发行版 **webkit2gtk / glibc 版本差异**
-- [ ] **Flathub**:Flatpak manifest + **文件 portal**(P0.5 已验证目录授权抽象);离线构建用 cargo vendor + 预构建前端产物;**Flathub 版不含 HEIC**
+- [ ] **Flathub**:Flatpak manifest + **文件 portal**(P0.5 已验证目录授权抽象);离线构建用 cargo vendor + 预构建前端产物;**Flathub 主包不含 HEIC**,可选插件需另做 Flatpak extension/外部 helper 可执行性验证
 - [ ] 自动更新(AppImage 用 updater;Flatpak 由 Flathub 托管)
 
 **后续阶段(留门,不阻塞 v1):**
 - [ ] **macOS**:直分发 `.dmg`(Developer ID + notarytool 公证)起步 → 验证后再 MAS(App Sandbox + security-scoped bookmarks + Apple Distribution + provisioning + `.pkg`);HEIC 完整;AVIF 跑 arm64 实测后定后端
-- [ ] **Windows**:直分发 `.msi/.exe` 起步 → 后 MS Store(MSIX + `runFullTrust`);HEIC **仅解码**(WIC + 运行时探测 HEVC 扩展,缺失则引导安装,**不承诺开箱即用**)
-- [ ] ⚠️ **架构前提(全程保持)**:无子进程、Apache-2.0、依赖树无 GPL/AGPL/LGPL、文件访问走显式授权抽象 → 这样 v1 之后上商店不返工
+- [ ] **Windows**:直分发 `.msi/.exe` 起步 → 后 MS Store(MSIX + `runFullTrust`);HEIC **仅解码**(WIC + 运行时探测 HEVC 扩展,缺失则引导安装,**不承诺开箱即用**)。可选免费 HEIC helper 作为主程序外的 decode-only 插件研究,不进主包依赖树。
+- [ ] ⚠️ **架构前提(全程保持)**:主程序核心无子进程、Apache-2.0、依赖树无 GPL/AGPL/LGPL、文件访问走显式授权抽象 → 这样 v1 之后上商店不返工。P1.5 HEIC helper 是主包外直发/用户安装增强,商店构建默认禁用。
 
 ---
 
@@ -147,7 +162,7 @@
 
 | # | 评审发现 | 处理 | 落点 |
 |---|---|---|---|
-| 1 | 禁 LGPL 与 Linux libheif 自相矛盾 | **Linux v1 不含 HEIC** | 本文件 / LEGAL |
+| 1 | 禁 LGPL 与 Linux libheif 自相矛盾 | **主程序不内置 HEIC**;如做 HEIC,只能外部 helper decode-only 单独分发 | 本文件 / LEGAL |
 | 2 | rav1e 无 arm64 汇编,Apple Silicon AVIF 慢 | Linux x86 v1 不咬人;macOS 阶段实测后定后端 | P0.5 / ENGINE |
 | 3 | ssimulacra2 二分搜索 × AVIF 不可用;PNG 无 quality 可搜 | 自动质量**仅 JPEG/WebP** | P2 |
 | 4 | 文件级并发 × rav1e 内部线程 oversubscribe | rav1e `threads=1` | P0.5 / P1 |
@@ -170,7 +185,7 @@
 | Tauri CLI / api | **2.11.4** / **2.11.1** | crate `tauri` 2.11.x |
 | Vite | **8.1.0** | ⚠️ Vite 8 默认 Rolldown,较新 |
 | TypeScript | **6.0.3** | 6.0 是面向 TS 7(原生编译器)的过渡版 |
-| 图像引擎 | **进程内 Rust crate**(混合架构) | `mozjpeg`/`oxipng`/`webp`/**`libavif-sys`(codec-rav1e)**/`image` + 按平台系统 HEIC;**取代 libvips**;详见 ENGINE.md |
+| 图像引擎 | **进程内 Rust crate**(混合架构) | `mozjpeg`/`oxipng`/`webp`/**`libavif-sys`(codec-rav1e)**/`image`;HEIC 主包不内置,系统/插件能力另行探测;**取代 libvips**;详见 ENGINE.md |
 | C 构建工具链 | **NASM**(macOS 钉 2.15.05;装后做版本检测)+ cmake + meson/ninja | rav1e/mozjpeg/libavif/libwebp 静态链接需要;Linux 上 webkit2gtk 仍为动态系统库 |
 | 许可证 | **Apache-2.0** ✅ | 为上架从 AGPL 转;含专利授权;禁 GPL/AGPL/LGPL 依赖(deny.toml) |
 | 包管理/运行时 | **pnpm 10 + Node LTS** ✅ | `package.json#packageManager` + `pnpm-lock.yaml`;Rust 后端不受影响 |

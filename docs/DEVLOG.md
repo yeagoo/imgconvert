@@ -5,6 +5,22 @@
 
 ---
 
+## 2026-06-30 — HEIC 插件策略文档化
+
+Codex 记录 HEIC 可选插件路线,并按许可/平台依赖做了一轮方案 review:
+
+- **主程序边界**:ImgConvert 主程序继续 Apache-2.0,依赖树继续禁止 GPL/AGPL/LGPL;HEIC 不作为主包内置 codec。
+- **插件形态**:HEIC 作为独立进程 helper/plugin,单独 LGPL 分发,用户显式安装后激活;主程序只做 manifest 发现、能力合并和受控进程调用。
+- **Linux 差异**:Debian/Ubuntu 可提示 `libheif-examples` 等系统工具;Fedora 的 HEVC-encoded HEIC 可能需要 RPM Fusion `libheif-freeworld`;`heif-gdk-pixbuf`/`heif-thumbnailer` 只影响 GTK/文件管理器,不能等同于 core 能力。
+- **Windows 免费路线**:系统路线仍是 WIC + HEIF/HEVC 扩展;若要避免要求用户购买 Microsoft Store HEVC 扩展,可另做 decode-only `imgconvert-heic-helper.exe`。注意不能直接整包带现成 MSYS2 `libheif` 发行物,因为依赖组合可能包含 `x265`/GPL;需要自建 decode-only 动态包并单独审计。
+- **功能范围**:插件第一版只声明 HEIC/HEIF 输入,不提供 HEIC 输出,不承诺 HEIC 开箱即用。
+- **渠道边界**:外部 helper 只作为主包外直发/用户安装增强;商店/Flathub 构建默认禁用,避免破坏现有上架前提。
+
+Review 结论:
+
+- 方案不破坏当前主程序 Apache-2.0/禁 LGPL 规则,前提是保持**独立进程 + 独立分发 + decode-only + 不打包 x265**。
+- 最大剩余风险是 HEVC 专利与各发行版 codec 组件可用性,因此需要运行时探测和平台化错误提示,不能写营销式“支持 HEIC”。
+
 ## 2026-06-30 — P1 文件可靠性:EXIF 旋正、内存预算与失败提示
 
 Codex 完成 P1 剩余文件可靠性三项的第一版可运行闭环:

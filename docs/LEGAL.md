@@ -29,7 +29,9 @@
 | MIT / BSD / Apache-2.0 / ISC / Zlib / MPL-2.0 | ✅ 允许 | 宽松,可静态链接、可商用上架(MPL 文件级 copyleft,改动需公开但可链接) |
 | IJG / NCSA / Apache-2.0 WITH LLVM-exception | ✅ 允许 | 宽松许可或宽松例外;当前由 mozjpeg / rav1e 间接依赖 / target-lexicon 引入,需在 NOTICE/THIRD_PARTY 中完整归属 |
 | **GPL-2.0 / GPL-3.0 / AGPL** | ⛔ **禁止** | 静态链接会传染整个二进制;与商店分发/闭源不兼容 |
-| **LGPL(任意版本)** | ⛔ **禁止**(含 libheif) | LGPL 要求可重新链接,与静态链接 + 商店不兼容。⚠️ **评审 #1 指出的矛盾**:曾设想「Linux 用 libheif(LGPL)做 HEIC」与本规则冲突 → **裁决:Linux v1 不做 HEIC**(见下),规则不破例。例外:Tauri 自身依赖的 **webkit2gtk(LGPL)是系统动态库**,属平台运行时,不在我们分发的 codec 静态链接范围内。 |
+| **LGPL(任意版本)** | ⛔ **主程序禁止**(含 libheif) | LGPL 要求可重新链接,与静态链接 + 商店不兼容。⚠️ **评审 #1 指出的矛盾**:曾设想「Linux 直接用 libheif(LGPL)做 HEIC」与本规则冲突 → **裁决:主程序不内置 HEIC**(见下),规则不破例。例外:Tauri 自身依赖的 **webkit2gtk(LGPL)是系统动态库**,属平台运行时,不在我们分发的 codec 静态链接范围内。 |
+
+> 例外边界:可以另做**独立分发、独立进程**的 HEIC 插件/helper,该插件可用 LGPL 许可并动态使用系统 libheif/libde265。主程序不能链接该库,不能把插件作为默认内置 codec 混进主依赖树,也不能把 LGPL/GPL 组件计入 `imgconvert` 主包的“开箱即用”能力。
 
 **具体被排除的库**(参考项目用过、我们不能用):
 - **`imagequant` / libimagequant(GPL-3.0)**——有损 PNG 量化 → 改用 `color_quant`(MIT,NeuQuant)或 `image` 内置量化,或只做 oxipng 无损。
@@ -47,12 +49,22 @@
 
 - HEIC = **HEIF 容器 + 常用 HEVC 编码**,受**多个专利池**(MPEG LA / Access Advance / Via LA 等)覆盖,**无 AV1 那种干净 RF 授权**。**不随包分发任何 HEVC 编码器(如 x265)**。
 - **按平台处理**(评审 #1/#5/#9):
-  - **Linux v1:不做 HEIC**(避免 libheif/LGPL + x265/GPL + 专利)。
+  - **Linux v1 主包:不内置 HEIC**(避免 libheif/LGPL + x265/GPL + 专利)。可选插件只作为用户显式安装后的外部 helper,decode-only。
   - **macOS(后续):ImageIO**(经 `objc2`/`core-graphics` 进程内,不 shell `sips`);⚠️ 沙盒内 HEVC 编码能否用须实测。
   - **Windows(后续):WIC** —— 查看 HEIC 常需 **HEIF Image Extensions + HEVC Video Extensions**(后者部分地区付费);运行时探测 WIC 是否注册 HEIF/HEVC 编解码,缺失则引导安装。**v1 产品策略仅承诺解码**(不代表 WIC 技术上绝对不能编码),**不承诺开箱即用**。
+  - **Windows 可选免费插件**:可做独立 `imgconvert-heic-helper.exe` 来避免用户必须购买 Microsoft Store HEVC 扩展;但只能作为单独分发的 LGPL helper,并且第一版 decode-only。不要直接整包带现成 MSYS2 `libheif` 发行物,因为其依赖组合可能包含 `x265`/GPL;如需自带,必须自建只含 decode 路径的 libheif + libde265 动态包并单独审计许可证/NOTICE/源码提供义务。
 - ⚠️ **「调用系统编解码器 = 专利免责」不成立**:平台(Apple/微软)为其系统 API 已向池方付费,这是**事实上的安全垫**,**非法律免责**。实务上针对「仅调系统 API、不捆绑编码器」的小应用追诉概率极低(Squoosh/ImageOptim 同此),但:
   - 营销/文案**勿平铺「支持 HEIC」**,按平台能力如实写。
   - **商用/收费版上线前找 IP 律师**就 HEVC 专利出书面意见。
+
+## 可选 HEIC 插件合规规则
+
+- 插件仓库/包名建议:`imgconvert-heic-plugin`。许可证可用 `LGPL-3.0-or-later` 或与所用 libheif/libde265 组合兼容的 LGPL 版本。
+- 分发形态:独立 installer/压缩包/系统包;主程序只发现 manifest 与调用 helper。不能把 helper 当作主程序内置依赖,不能让 `cargo deny` 主依赖树出现 LGPL/GPL。
+- 商店形态:App Store/MS Store/Flathub 构建默认禁用外部 helper;如未来某渠道允许插件/扩展,需按该渠道单独设计和审计。
+- 功能范围:只声明 `readable: ["heic","heif","hif"]`;`writable` 为空。HEIC 编码输出暂缓,避免 x265/GPL 与 HEVC 编码专利风险。
+- LGPL 义务:插件必须提供许可证全文、NOTICE/版权、对应源码或源码获取方式,并允许用户替换 LGPL 组件。若修改 libheif/libde265,需提供修改源码。
+- 安全义务:主程序不得执行来自图片目录的同名 helper;只允许受信任安装目录或用户显式选择的 helper。调用必须避免 shell 拼接,防止路径/文件名注入。
 
 ## AV1 / AVIF 专利
 
