@@ -5,6 +5,29 @@
 
 ---
 
+## 2026-06-30 — P0.5 许可合规最小闭环
+
+Codex 完成 P0.5「许可清单尖刺」的第一版可运行闭环:
+
+- **Rust 许可闸门**:`src-tauri/deny.toml` 现在可由 `pnpm run license:rust` 调用 `cargo deny check licenses`,继续禁止 GPL/AGPL/LGPL,并显式放行当前依赖树里确认过的宽松 SPDX(IJG / NCSA / Apache-2.0 WITH LLVM-exception)。
+- **第三方许可产物**:新增 `src-tauri/about.toml` / `about.hbs` 与 `scripts/generate-third-party-licenses.mjs`;`pnpm run license:third-party` 会用 `cargo-about` 生成 Rust 许可全文,并追加 `pnpm licenses list --long` 的 npm 依赖清单到根目录 `THIRD_PARTY_LICENSES.md`。
+- **npm 许可扫描**:新增 `scripts/check-npm-licenses.mjs`;`pnpm run license:npm` 基于 pnpm 自带 JSON 输出拦截 GPL/AGPL/LGPL,不额外引入 npm 审计依赖。
+- **应用内许可页**:顶栏新增「开源许可」入口,弹层按需加载 `public/THIRD_PARTY_LICENSES.md` 文本,避免把 1.1 万行许可文本塞进首屏 JS,同时满足二进制用户可见的基础归属要求。
+
+验证:
+
+- `pnpm run license:npm`:通过,未发现 GPL/AGPL/LGPL。
+- `pnpm run license:rust`:通过,`cargo deny` licenses ok。
+- `pnpm run license:third-party`:通过,生成 `THIRD_PARTY_LICENSES.md`。
+- `pnpm run check`:通过(0 errors / 0 warnings)。
+
+限制:
+
+- `pnpm licenses list --long` 只是 npm 归属清单,不是全文 license 聚合;发布前仍需人工复核 npm 包 license 文件是否需要并入完整文本。
+- `cargo-about` 已覆盖 Rust crate 许可全文,但 C 库 NOTICE/IJG 段仍需在发布候选阶段人工抽查一遍。
+
+---
+
 ## 2026-06-30 — P0.5 批量任务协议最小闭环
 
 Codex 完成 P0.5「进度/取消协议」的第一版可运行闭环:

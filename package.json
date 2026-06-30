@@ -10,6 +10,10 @@
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
+    "license:check": "pnpm run license:npm && pnpm run license:rust",
+    "license:npm": "node scripts/check-npm-licenses.mjs",
+    "license:rust": "cd src-tauri && cargo deny check licenses",
+    "license:third-party": "node scripts/generate-third-party-licenses.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

@@ -27,6 +27,7 @@
 | 许可证 | 处理 | 原因 |
 |---|---|---|
 | MIT / BSD / Apache-2.0 / ISC / Zlib / MPL-2.0 | ✅ 允许 | 宽松,可静态链接、可商用上架(MPL 文件级 copyleft,改动需公开但可链接) |
+| IJG / NCSA / Apache-2.0 WITH LLVM-exception | ✅ 允许 | 宽松许可或宽松例外;当前由 mozjpeg / rav1e 间接依赖 / target-lexicon 引入,需在 NOTICE/THIRD_PARTY 中完整归属 |
 | **GPL-2.0 / GPL-3.0 / AGPL** | ⛔ **禁止** | 静态链接会传染整个二进制;与商店分发/闭源不兼容 |
 | **LGPL(任意版本)** | ⛔ **禁止**(含 libheif) | LGPL 要求可重新链接,与静态链接 + 商店不兼容。⚠️ **评审 #1 指出的矛盾**:曾设想「Linux 用 libheif(LGPL)做 HEIC」与本规则冲突 → **裁决:Linux v1 不做 HEIC**(见下),规则不破例。例外:Tauri 自身依赖的 **webkit2gtk(LGPL)是系统动态库**,属平台运行时,不在我们分发的 codec 静态链接范围内。 |
 
@@ -81,7 +82,7 @@
 
 ## 合规自动化与审计范围
 
-- `src-tauri/deny.toml`(cargo-deny)**禁止 GPL/AGPL/LGPL**,只放行宽松许可;CI 自动运行 `cargo deny check licenses`。
-- `cargo-about`(`about.toml` 白名单 + 模板)**自动生成 `THIRD_PARTY_LICENSES.md`**,在 CI 跑(不手动)。
-- 完整许可清单需综合:`cargo deny`(Cargo)+ `license-checker`(npm)+ `cargo-about`(NOTICE/THIRD_PARTY)。
+- `src-tauri/deny.toml`(cargo-deny)**禁止 GPL/AGPL/LGPL**,只放行宽松许可;CI 自动运行 `pnpm run license:rust`。
+- `cargo-about`(`src-tauri/about.toml` 白名单 + 模板)**自动生成 `THIRD_PARTY_LICENSES.md`**,通过 `pnpm run license:third-party` 跑。
+- 完整许可清单需综合:`cargo deny`(Cargo)+ `pnpm licenses list --long` / `scripts/check-npm-licenses.mjs`(npm)+ `cargo-about`(NOTICE/THIRD_PARTY)。
 - ⚠️ cargo-deny **不覆盖** npm 包与系统框架调用(ImageIO/WIC 是系统能力,不分发,无许可负担)。

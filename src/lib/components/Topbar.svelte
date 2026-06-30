@@ -1,7 +1,8 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 <script lang="ts">
-  import { Images, Sun, Moon, Desktop, Sparkle } from "phosphor-svelte";
+  import { Images, Sun, Moon, Desktop, Info, Sparkle } from "phosphor-svelte";
   import { Button } from "$lib/components/ui/button";
+  import LegalDialog from "$lib/components/LegalDialog.svelte";
   import { settings, engine, applyTheme, persistSettings } from "$lib/state.svelte";
 
   const themeIcon = $derived(
@@ -10,6 +11,7 @@
   const themeLabel = $derived(
     settings.theme === "dark" ? "深色" : settings.theme === "light" ? "浅色" : "跟随系统",
   );
+  let legalOpen = $state(false);
 
   function cycleTheme() {
     const order = ["light", "dark", "system"] as const;
@@ -46,5 +48,10 @@
     <Button variant="ghost" size="icon" title="主题:{themeLabel}" onclick={cycleTheme}>
       <ThemeIcon weight="duotone" />
     </Button>
+    <Button variant="ghost" size="icon" title="开源许可" onclick={() => (legalOpen = true)}>
+      <Info weight="duotone" />
+    </Button>
   </div>
 </header>
+
+<LegalDialog bind:open={legalOpen} />
