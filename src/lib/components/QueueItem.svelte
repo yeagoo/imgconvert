@@ -24,6 +24,7 @@
 
   let { item }: { item: QueueItem } = $props();
 
+  const busy = $derived(ui.converting || ui.importing);
   const sourceFormat = $derived(formatFromExt(extOf(item.path)));
   const targetFormat = $derived(itemTargetFormat(item));
   const sourceAccent = $derived(formatAccent(sourceFormat));
@@ -77,7 +78,7 @@
       <button
         class="rounded-md p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-30"
         onclick={() => removeItem(item.path)}
-        disabled={ui.converting}
+        disabled={busy}
         aria-label="移除"
       >
         <X size={16} />
@@ -106,7 +107,7 @@
         globalLabel={`跟随 ${formatLabel(settings.format)}`}
         triggerClass="w-36"
         triggerSize="sm"
-        disabled={ui.converting}
+        disabled={busy}
         {sourceFormats}
         onChange={updateFormat}
       />

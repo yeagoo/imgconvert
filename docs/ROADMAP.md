@@ -1,6 +1,6 @@
 # 开发路线图
 
-> 📍 **当前进度(2026-06-30)**:P0.5 引擎尖刺已通(`imgconvert-core` 跑通 JPEG/PNG/WebP/AVIF,测试全绿)→ **P0「前端整顿」三项已落地**(组件化架构 + core 能力契约 + shadcn 控件/格式选择器)→ **P0.5 批量进度/取消协议最小闭环已落地**。下一步进入 P0.5 文件访问/许可尖刺与 P1 并发批量。详见 [DEVLOG.md](DEVLOG.md)。
+> 📍 **当前进度(2026-06-30)**:P0.5 引擎尖刺已通(`imgconvert-core` 跑通 JPEG/PNG/WebP/AVIF,测试全绿)→ **P0「前端整顿」三项已落地**(组件化架构 + core 能力契约 + shadcn 控件/格式选择器)→ **P0.5 批量进度/取消协议与许可闭环已落地** → **P1 文件导入层最小闭环已落地**(拖拽/选择文件/选择文件夹统一走 Rust 扫描、过滤、去重)。下一步进入 P1 并发批量与导入元数据/缩略图。详见 [DEVLOG.md](DEVLOG.md)。
 
 > 原则:**UI/UX 优先**——先把界面与交互做出来「看得见」,再逐步接真实功能与高级压缩。
 > 参考依据见 [REFERENCES.md](REFERENCES.md),引擎/打包设计见 [ENGINE.md](ENGINE.md)。
@@ -79,7 +79,7 @@
 - [x] **core crate 尖刺**(2026-06):建 `crates/imgconvert-core`,`Codec` trait + `ImageData`(RGBA8,8-bit SDR,带不变量校验)+ pipeline,接 `mozjpeg`/`oxipng`/`webp`/`image`,跑通 JPEG/PNG/WebP 一轮转换 + 跨格式转换;`image` 已 `default-features=false`(避免带回 AVIF/ravif/rayon/nasm);JPEG 编码 `catch_unwind` 截 Rust panic、alpha 合成白底;WebP 解码 `BitstreamFeatures` 预检拒动图/超尺寸。aarch64 Linux 编译 + clippy(`-D warnings`)+ fmt + 10 测试全过。⚠️ **N5 待办**:`webp 0.3` 仅暴露 `encode_simple(lossless, quality)`,**未暴露 method/near_lossless/sharp_yuv**——P2 高级参数需降级到 `libwebp-sys` 自填 `WebPConfig`。
 - [x] **AVIF 后端尖刺**(2026-06):`libavif-sys 0.17`(`codec-rav1e` 编码 + `codec-dav1d` 解码,`default-features=false`)接入 core,`AvifCodec` 实现编解码 + magic 检测(`ftyp`/avif·avis)。**aarch64 Linux 全链编译通过**(rav1e 纯 Rust、dav1d 走 meson/ninja,arm64 无需 nasm,首次 ~1min)。验证:**alpha 往返**(YUV444 + RGBA)、**ICC 逐字节往返**(`avif_preserves_icc` 测试,证实弃用裸 ravif 的主因已解决,评审 #8)、**convert 管线 PNG↔AVIF**。FFI 用 RAII guard(`ImageGuard`/`EncoderGuard`/`DecoderGuard`/`RwDataGuard`)保证各返回路径释放 C 资源。**后端可插拔点**:`avifEncoder.codecChoice`(当前 `AVIF_CODEC_CHOICE_RAV1E`;切 aom/svt 只需改该枚举 + Cargo feature)。⚠️ 待办:(a) **N3** `maxThreads=1` 已设但未证实压住 rav1e 内部 rayon 池(需 macOS/多核机实测线程数);(b) AVIF 真·无损需 identity matrix,当前不在 `capabilities().lossless` 声明;(c) speed=8 默认值待 arm64 实测(评审 #2)。
 - [ ] **C 工具链尖刺**:Linux 三发行版 + arm64 各编译通过——NASM(x86)+ cmake/meson/ninja;**NASM 装好后加版本检测,失败给明确错误**。⚠️ **arm64 用原生 runner,别交叉**(Claude N4:dav1d meson cross-file + cmake toolchain 是出名的坑,无 Linux-arm64 交叉先例);若必须交叉则列为高风险待验证。
-- [ ] **文件访问抽象尖刺(新增,前移)**:把「读输入目录 / 写输出目录」抽象成显式授权模型,先在 **Flatpak portal** 下跑通(拿到的可能是 portal 路径,非真实路径);确保该抽象**日后能换 macOS security-scoped bookmark**。← 决定 P1 文件 API,不能拖到 P3(评审一致)。
+- [ ] **文件访问抽象尖刺(新增,前移)**:把「读输入目录 / 写输出目录」抽象成显式授权模型,先在 **Flatpak portal** 下跑通(拿到的可能是 portal 路径,非真实路径);确保该抽象**日后能换 macOS security-scoped bookmark**。← 决定 P1 文件 API,不能拖到 P3(评审一致)。P1 已先把输入导入统一收口到 `scan_import_paths`,后续 portal/bookmark 接入应落在该边界下。
 - [ ] **并发尖刺**:文件级信号量并发下不 oversubscribe / 不 OOM(评审 #4)。⚠️ **验收(Claude N3)**:设 libavif `maxThreads=1` 后**实测 rav1e 是否仍另起自己的 rayon 全局池**(`libavif-sys` 的 maxThreads 控的是 libavif tile 线程,未必压住 rav1e)——若是,需显式设 rav1e 线程池或关其 threading 特性。
 - [x] **许可清单尖刺**:`cargo-about` 生成 `THIRD_PARTY_LICENSES`;**做应用内「开源许可」页**(全文,含 IJG/BSD/Apache NOTICE);`cargo deny` 禁 GPL/AGPL/LGPL。npm 侧读取已安装包的 LICENSE/NOTICE/COPYING 文件并纳入生成物;少量缺失文件的 npm 包在生成物中标记,发布前人工复核。
 - [x] **进度/取消协议**:Tauri **Channel** + `CancellationToken` 最小闭环。当前 `convert_batch` 串行执行,取消在文件边界生效;P1 再接文件级并发/信号量/内存预算。
@@ -90,15 +90,15 @@
 
 ## P1 — 拖拽 + 批量 + 真实转换
 
-- [ ] Tauri `tauri://drag-drop` 原生拖拽(拿绝对路径,改写自 DropWebP MIT)
+- [x] Tauri `tauri://drag-drop` 原生拖拽(拿绝对路径,改写自 DropWebP MIT)
 - [ ] 剪贴板粘贴导入
-- [ ] 递归目录扫描 + 扩展名过滤 + 去重(改写自 DropWebP)
+- [x] 递归目录扫描 + 扩展名过滤 + 去重(改写自 DropWebP)
 - [ ] **Rust 端并发批量**(全局任务队列 + 信号量限并发)——替换当前串行
   - 外层全局并发上限(默认 `(num_cpus-1).clamp(1,8)`,信号量控流)+ 内存预算 + 用户可调并发;大图场景降并发。
   - 进程内无子进程,不存在 vips「多进程×多线程」过度并发问题,但 `libavif`(rav1e)/`oxipng` 本身吃内存且内部多线程(设 maxThreads=1),仍需控流。
 - [ ] **进度/取消统一走 Tauri Channel**(有序、低延迟、按调用作用域;`{index, percent, stage, status}`)。取消 = `CancellationToken`(见 ENGINE.md §7)。P0.5 已落 `convert_batch`/`cancel_batch` 最小闭环;P1 还需并发接入后把 `ask` 覆盖策略也纳入统一协议。
-- [ ] 批处理三态(成功/跳过/错误)+ 单张失败不中断 + 末尾汇总
-- [ ] **格式选择器由 core 支持矩阵驱动**(core 暴露可读/可写格式),别硬编码
+- [x] 批处理三态(成功/跳过/错误)+ 单张失败不中断 + 末尾汇总
+- [x] **格式选择器由 core 支持矩阵驱动**(core 暴露可读/可写格式),别硬编码
 - [ ] 导入 ping 尺寸/DPI(`image` reader);异步生成缩略图
 - [ ] **原子写 + 保留时间戳 + 保留目录结构**(借鉴 caesium)
 - [ ] HEIC:⚠️ **v1(Linux)不含 HEIC**(Codex:此处与 Linux-first 冲突已修正);macOS/Windows 的系统原生 HEIC 是**后续平台阶段**任务(见 P3 + ENGINE.md §3)

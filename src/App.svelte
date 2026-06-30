@@ -19,12 +19,12 @@
   import Topbar from "$lib/components/Topbar.svelte";
   import {
     addDemoItems,
-    addPaths,
     cancelConversion,
     checkEngine,
     clearQueue,
     convertAll,
     engine,
+    importPaths,
     initPersistence,
     isTauriRuntime,
     queue,
@@ -55,7 +55,7 @@
     if (!runningInTauri) return;
 
     const unlisten = getCurrentWebview().onDragDropEvent((event) => {
-      if (ui.converting) {
+      if (ui.converting || ui.importing) {
         ui.dragActive = false;
         return;
       }
@@ -64,7 +64,7 @@
         ui.dragActive = true;
       } else if (event.payload.type === "drop") {
         ui.dragActive = false;
-        addPaths(event.payload.paths);
+        void importPaths(event.payload.paths);
       } else {
         ui.dragActive = false;
       }
@@ -83,7 +83,7 @@
         class="pointer-events-none fixed inset-0 z-40 grid place-items-center border-4 border-primary/50 bg-primary/10 backdrop-blur-sm"
       >
         <div class="rounded-lg border bg-card px-4 py-2 text-sm font-medium shadow-md">
-          释放以添加图片
+          释放以扫描图片
         </div>
       </div>
     {/if}
@@ -116,7 +116,7 @@
               disabled={
                 ui.converting
                   ? ui.cancelRequested
-                  : !queue.length || !engine.ok
+                  : ui.importing || !queue.length || !engine.ok
               }
             >
               {#if ui.converting}
@@ -131,7 +131,7 @@
               variant="ghost"
               size="sm"
               onclick={clearQueue}
-              disabled={ui.converting || !queue.length}
+              disabled={ui.converting || ui.importing || !queue.length}
             >
               <Trash />
               清空

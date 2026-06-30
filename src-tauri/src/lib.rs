@@ -2,10 +2,12 @@
 // Copyright (C) 2026 ImgConvert contributors
 
 mod convert;
+mod import;
 
 use convert::{
     BatchProgressEvent, BatchState, BatchSummary, Capabilities, ConvertOptions, ConvertResult,
 };
+use import::{ImportScanResult, ScanImportOptions};
 use tauri::ipc::Channel;
 use tauri::State;
 
@@ -52,6 +54,14 @@ fn cancel_batch(state: State<'_, BatchState>) -> bool {
     state.cancel_current()
 }
 
+/// 扫描用户显式授权的文件/目录路径,递归过滤出可读图片文件。
+#[tauri::command]
+async fn scan_import_paths(options: ScanImportOptions) -> Result<ImportScanResult, String> {
+    tauri::async_runtime::spawn_blocking(move || import::scan_import_paths(options))
+        .await
+        .map_err(|e| format!("导入扫描任务调度失败: {e}"))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -63,7 +73,8 @@ pub fn run() {
             capabilities,
             convert_image,
             convert_batch,
-            cancel_batch
+            cancel_batch,
+            scan_import_paths
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

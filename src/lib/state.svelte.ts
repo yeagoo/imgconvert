@@ -32,6 +32,15 @@ export interface ConvertResult {
   inSize: number;
   outSize: number;
 }
+export interface ImportScanError {
+  path: string;
+  message: string;
+}
+export interface ImportScanResult {
+  files: string[];
+  skipped: number;
+  errors: ImportScanError[];
+}
 export interface BatchSummary {
   total: number;
   completed: number;
@@ -165,6 +174,8 @@ export const ui = $state({
   converting: false,
   cancelRequested: false,
   dragActive: false,
+  importing: false,
+  importMessage: "",
 });
 
 export const engine = $state<{ text: string; ok: boolean }>({
@@ -268,14 +279,27 @@ export function fmtSize(b: number): string {
   return `${(b / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${u[i]}`;
 }
 
+export interface AddPathsResult {
+  added: number;
+  duplicates: number;
+  skipped: number;
+}
+
 // ---- 队列操作(就地变更,保持响应式)----
-export function addPaths(paths: string[]) {
-  if (ui.converting) return;
+export function addPaths(paths: string[]): AddPathsResult {
+  const result: AddPathsResult = { added: 0, duplicates: 0, skipped: 0 };
+  if (ui.converting) return result;
 
   const readable = readableExtensions();
   for (const p of paths) {
-    if (!readable.includes(extOf(p))) continue;
-    if (queue.some((it) => it.path === p)) continue;
+    if (!readable.includes(extOf(p))) {
+      result.skipped += 1;
+      continue;
+    }
+    if (queue.some((it) => it.path === p)) {
+      result.duplicates += 1;
+      continue;
+    }
     queue.push({
       path: p,
       name: baseName(p),
@@ -283,7 +307,55 @@ export function addPaths(paths: string[]) {
       detail: "",
       targetFormat: null,
     });
+    result.added += 1;
   }
+  return result;
+}
+
+export async function importPaths(paths: string[]) {
+  if (ui.converting || ui.importing || paths.length === 0) return;
+
+  ui.importing = true;
+  ui.importMessage = "正在扫描导入…";
+  try {
+    if (!isTauriRuntime()) {
+      const added = addPaths(paths);
+      ui.importMessage = formatImportSummary(added, 0, 0);
+      return;
+    }
+
+    const scan = await invoke<ImportScanResult>("scan_import_paths", {
+      options: {
+        paths,
+        extensions: readableExtensions(),
+        recursive: true,
+      },
+    });
+    const added = addPaths(scan.files);
+    ui.importMessage = formatImportSummary(added, scan.skipped, scan.errors.length);
+
+    if (scan.errors.length > 0) {
+      console.warn("导入扫描存在错误:", scan.errors);
+    }
+  } catch (e) {
+    ui.importMessage = `导入失败:${e}`;
+  } finally {
+    ui.importing = false;
+  }
+}
+
+function formatImportSummary(
+  added: AddPathsResult,
+  scanSkipped: number,
+  scanErrors: number,
+): string {
+  const skipped = scanSkipped + added.skipped;
+  const parts: string[] = [];
+  if (added.added > 0) parts.push(`已添加 ${added.added} 个文件`);
+  if (added.duplicates > 0) parts.push(`${added.duplicates} 个重复`);
+  if (skipped > 0) parts.push(`跳过 ${skipped} 个`);
+  if (scanErrors > 0) parts.push(`${scanErrors} 个错误`);
+  return parts.join(" · ") || "未找到支持的图片";
 }
 
 export function addDemoItems() {
@@ -307,7 +379,7 @@ export function addDemoItems() {
 }
 
 export function setItemTargetFormat(path: string, format: string | null) {
-  if (ui.converting) return;
+  if (ui.converting || ui.importing) return;
 
   const item = queue.find((it) => it.path === path);
   if (!item) return;
@@ -322,7 +394,7 @@ export function setItemTargetFormat(path: string, format: string | null) {
 }
 
 export function resetItemFormats() {
-  if (ui.converting) return;
+  if (ui.converting || ui.importing) return;
 
   for (const item of queue) {
     item.targetFormat = null;
@@ -334,18 +406,18 @@ export function resetItemFormats() {
   }
 }
 export function removeItem(path: string) {
-  if (ui.converting) return;
+  if (ui.converting || ui.importing) return;
   const i = queue.findIndex((it) => it.path === path);
   if (i >= 0) queue.splice(i, 1);
 }
 export function clearQueue() {
-  if (ui.converting) return;
+  if (ui.converting || ui.importing) return;
   queue.splice(0, queue.length);
 }
 
 // ---- 转换 ----
 export async function convertAll() {
-  if (ui.converting || queue.length === 0) {
+  if (ui.converting || ui.importing || queue.length === 0) {
     return;
   }
 

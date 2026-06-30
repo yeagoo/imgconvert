@@ -21,6 +21,7 @@
   } from "$lib/state.svelte";
 
   let outputMessage = $state("");
+  const busy = $derived(ui.converting || ui.importing);
 
   function isString(value: string | null): value is string {
     return value !== null;
@@ -55,7 +56,7 @@
   });
 
   async function pickOut() {
-    if (ui.converting) return;
+    if (busy) return;
 
     if (!isTauriRuntime()) {
       outputMessage = "网页预览不支持选择本机输出目录";
@@ -63,7 +64,7 @@
     }
 
     const sel = await open({ directory: true, multiple: false });
-    if (ui.converting) return;
+    if (busy) return;
 
     if (typeof sel === "string") {
       settings.outDir = sel;
@@ -73,7 +74,7 @@
   }
 
   function clearOut() {
-    if (ui.converting) return;
+    if (busy) return;
 
     settings.outDir = null;
     outputMessage = "";
@@ -81,14 +82,14 @@
   }
 
   function setFormat(value: string) {
-    if (ui.converting) return;
+    if (busy) return;
 
     settings.format = value;
     persistSettings();
   }
 
   function setOverwrite(value: string) {
-    if (ui.converting) return;
+    if (busy) return;
 
     if (value === "ask" || value === "skip" || value === "overwrite") {
       settings.overwrite = value;
@@ -97,7 +98,7 @@
   }
 
   function setTemplate(value: string) {
-    if (ui.converting) return;
+    if (busy) return;
 
     settings.fileNameTemplate = value;
     persistSettings();
@@ -113,12 +114,12 @@
       bind:value={settings.format}
       {sourceFormats}
       onChange={setFormat}
-      disabled={ui.converting}
+      disabled={busy}
       triggerClass="w-full"
     />
   </div>
 
-  <div class="flex min-w-0 flex-col gap-2" class:opacity-40={!lossyEnabled || ui.converting}>
+  <div class="flex min-w-0 flex-col gap-2" class:opacity-40={!lossyEnabled || busy}>
     <div class="flex items-center justify-between gap-3">
       <Label class="text-xs text-muted-foreground">质量</Label>
       <b class="tabular-nums text-sm text-foreground">{settings.quality}</b>
@@ -130,7 +131,7 @@
         min={1}
         max={100}
         step={1}
-        disabled={!lossyEnabled || ui.converting}
+        disabled={!lossyEnabled || busy}
         onValueCommit={persistSettings}
       />
     </div>
@@ -141,10 +142,10 @@
     <Select.Root
       type="single"
       bind:value={settings.overwrite}
-      disabled={ui.converting}
+      disabled={busy}
       onValueChange={setOverwrite}
     >
-      <Select.Trigger class="w-full" disabled={ui.converting}>{overwriteLabel}</Select.Trigger>
+      <Select.Trigger class="w-full" disabled={busy}>{overwriteLabel}</Select.Trigger>
       <Select.Content>
         <Select.Item value="ask" label="询问">询问</Select.Item>
         <Select.Item value="skip" label="跳过">跳过</Select.Item>
@@ -159,16 +160,16 @@
       value={settings.fileNameTemplate}
       class="h-8 rounded-md border bg-background px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
       placeholder="%name%"
-      disabled={ui.converting}
+      disabled={busy}
       oninput={(event) => setTemplate(event.currentTarget.value)}
     />
   </div>
 
   <div class="flex min-w-0 items-center gap-5 lg:col-span-2">
-    <div class="flex items-center gap-2" class:opacity-40={!canLossless || ui.converting}>
+    <div class="flex items-center gap-2" class:opacity-40={!canLossless || busy}>
       <Switch
         bind:checked={settings.lossless}
-        disabled={!canLossless || ui.converting}
+        disabled={!canLossless || busy}
         onCheckedChange={persistSettings}
       />
       <Label class="text-sm">无损压缩</Label>
@@ -189,7 +190,7 @@
       variant="ghost"
       size="sm"
       onclick={resetItemFormats}
-      disabled={ui.converting || !queue.length}
+      disabled={busy || !queue.length}
     >
       <ArrowsClockwise weight="duotone" />
       跟随全局格式
@@ -197,7 +198,7 @@
   </div>
 
   <div class="flex min-w-0 items-center gap-2">
-    <Button variant="ghost" size="sm" onclick={pickOut} disabled={ui.converting}>
+    <Button variant="ghost" size="sm" onclick={pickOut} disabled={busy}>
       <FolderOpen weight="duotone" />
       输出目录
     </Button>
@@ -205,7 +206,7 @@
       class="max-w-[220px] truncate text-left text-xs text-muted-foreground hover:text-foreground"
       title={settings.outDir ?? "与原文件相同目录(点击清除自定义目录)"}
       onclick={clearOut}
-      disabled={ui.converting}
+      disabled={busy}
     >
       {settings.outDir ?? "与原文件相同目录"}
     </button>

@@ -5,6 +5,33 @@
 
 ---
 
+## 2026-06-30 — P1 文件导入层最小闭环
+
+Codex 完成 P1「拖拽/文件夹导入」的第一版可运行闭环:
+
+- **Rust 导入扫描命令**:新增 `scan_import_paths(options)`。前端传入用户显式选择/拖拽的文件或目录,后端用 `std::fs` 递归扫描目录,按 `capabilities().readable` 对应扩展名过滤,并以规范化路径去重。扫描结果返回 `ImportScanResult { files, skipped, errors }`,权限/缺失路径等错误按条目记录,不让单个坏路径中断整批导入。
+- **符号链接边界**:普通符号链接文件可作为文件导入;符号链接目录不递归,避免目录循环和越过用户明确授权边界。
+- **前端统一入口**:`Dropzone` 增加「选择文件夹」,文件选择、文件夹选择、Tauri 原生拖拽都统一调用 `importPaths()`,并显示已添加/重复/跳过/错误数量。导入扫描期间禁止清空、移除、转换和设置改动,避免队列竞态。
+
+验证:
+
+- `pnpm run check`:通过(0 errors / 0 warnings)。
+- `pnpm run build`:通过。
+- `pnpm run license:check`:通过,未发现 GPL/AGPL/LGPL,第三方许可生成物保持最新。
+- `cargo +1.96.0 test --manifest-path src-tauri/Cargo.toml`:通过(12 tests)。
+- `cargo +1.96.0 clippy --manifest-path src-tauri/Cargo.toml -- -D warnings`:通过。
+- `cargo test -p imgconvert-core`:通过(12 tests)。
+- `cargo clippy -p imgconvert-core -- -D warnings`:通过。
+- `cargo fmt --check`、`cargo +1.96.0 fmt --manifest-path src-tauri/Cargo.toml --check`、`git diff --check`:通过。
+- `timeout 25s xvfb-run -a pnpm tauri dev`:按预期由 timeout 结束;启动链路到达 `Running target/debug/imgconvert`。
+
+限制:
+
+- Flatpak portal 与 macOS security-scoped bookmark 尚未接入;当前只是把输入导入路径收口到可替换的 Rust 边界。
+- 剪贴板粘贴、导入尺寸/DPI ping、异步缩略图仍在 P1 待办。
+
+---
+
 ## 2026-06-30 — P0.5 许可合规最小闭环
 
 Codex 完成 P0.5「许可清单尖刺」的第一版可运行闭环:
