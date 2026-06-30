@@ -5,6 +5,32 @@
 
 ---
 
+## 2026-06-30 — P1 ask 覆盖统一协议最小闭环
+
+Codex 完成 P1「ask 覆盖策略纳入批量协议」的第一版可运行闭环:
+
+- **转换规划命令**:新增 `plan_conversions(options)`。后端复用既有输出路径规则,按 batch 下标返回 `{ index, input, output, exists, error }`,供前端在转换开始前判断哪些文件需要覆盖确认。
+- **ask 决策前置**:`settings.overwrite === "ask"` 不再走前端逐文件 `convert_image` 串行分支;前端先根据规划结果逐项确认,确认覆盖的 job 改成 `overwrite`,取消覆盖的 job 改成 `skip`。
+- **转换统一走 batch**:ask 模式收集完决策后同样调用 `convert_batch` + Tauri Channel,因此进度、取消、并发、单文件跳过/错误汇总与 skip/overwrite 模式保持一致。
+- **竞态语义**:规划时不存在、转换前新出现的输出文件按 `skip` 处理,走 no-clobber 写入路径,避免 ask 模式在竞态下意外覆盖。
+
+验证:
+
+- `pnpm run check`:通过(0 errors / 0 warnings)。
+- `pnpm run build`:通过。
+- `pnpm run license:check`:通过,未发现 GPL/AGPL/LGPL,第三方许可生成物保持最新。
+- `cargo test -p imgconvert-core`:通过(16 tests)。
+- `cargo clippy -p imgconvert-core -- -D warnings`:通过。
+- `cargo +1.96.0 test --manifest-path src-tauri/Cargo.toml`:通过(24 tests)。
+- `cargo +1.96.0 clippy --manifest-path src-tauri/Cargo.toml -- -D warnings`:通过。
+- `cargo fmt --check`、`cargo +1.96.0 fmt --manifest-path src-tauri/Cargo.toml --check`、`git diff --check`:通过。
+- `timeout 25s xvfb-run -a pnpm tauri dev`:按预期由 timeout 结束;启动链路到达 `Running target/debug/imgconvert`。
+
+限制:
+
+- 覆盖确认仍是逐项系统 dialog,尚未做批量冲突列表弹窗。
+- 后端 Channel 仍是单向进度通道;用户交互决策保持在前端开始批量转换前完成。
+
 ## 2026-06-30 — P1 异步缩略图最小闭环
 
 Codex 完成 P1「异步生成缩略图」的第一版可运行闭环:
@@ -13,6 +39,7 @@ Codex 完成 P1「异步生成缩略图」的第一版可运行闭环:
 - **Tauri 缩略图命令**:新增 `generate_thumbnail(options)`。前端只传已导入的本机路径,后端在 blocking 线程读取文件并返回 `{ mime, width, height, bytes }`;缩略图最大边限制在 `32..512`。
 - **前端异步懒加载**:队列卡片进入视口附近才请求缩略图,全局并发固定为 2;返回字节转 Blob URL 展示,移除/清空队列时释放 URL。
 - **卡片展示**:原先格式占位升级为稳定尺寸的预览区;缩略图加载中显示小 spinner,失败或全透明时继续显示格式图标,不影响转换状态。
+- **review 修复**:缩略图命令生成前先检查文件元数据,超过 256 MiB 的源文件直接跳过预览,避免后台预览读取巨大伪图片;清空/移除队列时同步清理未执行的缩略图等待队列。
 
 验证:
 

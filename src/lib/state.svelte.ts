@@ -81,6 +81,13 @@ export interface ThumbnailResult {
   height: number;
   bytes: number[] | Uint8Array;
 }
+export interface ConversionPlanEntry {
+  index: number;
+  input: string;
+  output: string | null;
+  exists: boolean;
+  error: string | null;
+}
 type ConvertRequest = {
   input: string;
   format: string;
@@ -647,11 +654,7 @@ export async function convertAll() {
   ui.cancelRequested = false;
   ui.dragActive = false;
   try {
-    if (settings.overwrite === "ask") {
-      await convertAllWithAskPolicy();
-    } else {
-      await convertAllWithBatch();
-    }
+    await convertAllWithBatch();
   } finally {
     ui.converting = false;
     ui.cancelRequested = false;
@@ -680,11 +683,19 @@ async function convertAllWithBatch() {
     job.item.progress = 0;
   }
 
-  const progress = new Channel<BatchProgressEvent>((event) => {
-    handleBatchProgress(event, jobs);
-  });
-
   try {
+    if (settings.overwrite === "ask") {
+      await applyAskOverwriteDecisions(jobs);
+      if (ui.cancelRequested) {
+        finalizeCancelledJobs(jobs);
+        return;
+      }
+    }
+
+    const progress = new Channel<BatchProgressEvent>((event) => {
+      handleBatchProgress(event, jobs);
+    });
+
     const request: BatchConvertRequest = {
       options: jobs.map((job) => job.options),
       concurrency: batchConcurrency(),
@@ -713,48 +724,37 @@ function batchConcurrency(): number | null {
   return concurrency > 0 ? Math.min(8, concurrency) : null;
 }
 
-async function convertAllWithAskPolicy() {
-  for (const item of queue) {
+async function applyAskOverwriteDecisions(jobs: BatchJob[]) {
+  const plan = await invoke<ConversionPlanEntry[]>("plan_conversions", {
+    options: jobs.map((job) => job.options),
+  });
+
+  for (const entry of plan) {
     if (ui.cancelRequested) break;
-    if (item.status === "done") continue;
+    const job = jobs[entry.index];
+    if (!job) continue;
 
-    const options = prepareSingleJob(item);
-    if (!options) continue;
-
-    item.status = "running";
-    item.detail = "";
-    item.progress = 5;
-    try {
-      const res = await convertOneWithPolicy(options);
-      if (!res) {
-        item.status = "skipped";
-        item.detail = "已跳过(用户取消覆盖)";
-        item.progress = 100;
-        continue;
-      }
-      item.status = "done";
-      item.detail = formatResultDetail(res);
-      item.progress = 100;
-    } catch (e) {
-      const msg = String(e);
-      if (settings.overwrite === "skip" && msg.includes("已存在")) {
-        item.status = "skipped";
-        item.detail = "已跳过(输出已存在)";
-      } else {
-        item.status = "error";
-        item.detail = msg;
-      }
-      item.progress = 100;
+    if (entry.error) {
+      continue;
     }
-  }
+    if (!entry.exists) {
+      job.options.overwrite = false;
+      job.options.overwriteMode = "skip";
+      continue;
+    }
 
-  if (ui.cancelRequested) {
-    for (const item of queue) {
-      if (item.status === "running") {
-        item.status = "pending";
-        item.detail = "已取消";
-        item.progress = 0;
-      }
+    const confirmed = await confirmDialog(formatAskOverwriteMessage(entry), {
+      title: "确认覆盖",
+      kind: "warning",
+      okLabel: "覆盖",
+      cancelLabel: "跳过",
+    });
+    if (confirmed) {
+      job.options.overwrite = true;
+      job.options.overwriteMode = "overwrite";
+    } else {
+      job.options.overwrite = false;
+      job.options.overwriteMode = "skip";
     }
   }
 }
@@ -869,39 +869,8 @@ function formatSkipDetail(message: string): string {
   return message.includes("已存在") ? "已跳过(输出已存在)" : `已跳过:${message}`;
 }
 
-async function convertOneWithPolicy(options: ConvertRequest): Promise<ConvertResult | null> {
-  try {
-    return await invoke<ConvertResult>("convert_image", { options });
-  } catch (e) {
-    const msg = String(e);
-    if (options.overwriteMode !== "ask" || !isOutputExistsError(msg)) {
-      throw e;
-    }
-
-    const confirmed = await confirmDialog(formatOutputExistsMessage(msg), {
-      title: "确认覆盖",
-      kind: "warning",
-      okLabel: "覆盖",
-      cancelLabel: "跳过",
-    });
-    if (!confirmed) return null;
-
-    return invoke<ConvertResult>("convert_image", {
-      options: {
-        ...options,
-        overwrite: true,
-        overwriteMode: "overwrite",
-      },
-    });
-  }
-}
-
-function isOutputExistsError(message: string): boolean {
-  return message.includes("输出已存在");
-}
-
-function formatOutputExistsMessage(message: string): string {
-  return message.replace(/^输出已存在(?:\(需要确认覆盖\)|\(未开启覆盖\))?:?\s*/, "输出文件已存在:\n");
+function formatAskOverwriteMessage(entry: ConversionPlanEntry): string {
+  return `输出文件已存在:\n${entry.output ?? entry.input}`;
 }
 
 // ---- 引擎检测 ----

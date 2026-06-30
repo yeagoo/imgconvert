@@ -82,6 +82,17 @@ pub struct ConvertResult {
     pub out_size: u64,
 }
 
+/// 转换前输出路径规划,用于前端 ask 覆盖策略一次性收集决策。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversionPlanEntry {
+    pub index: usize,
+    pub input: String,
+    pub output: Option<String>,
+    pub exists: bool,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BatchSummary {
@@ -296,6 +307,29 @@ fn output_path(opts: &ConvertOptions) -> Result<PathBuf, String> {
     let mut out = dir.join(output_stem);
     out.set_extension(ext);
     Ok(out)
+}
+
+pub fn conversion_plan(options: &[ConvertOptions]) -> Vec<ConversionPlanEntry> {
+    options
+        .iter()
+        .enumerate()
+        .map(|(index, options)| match output_path(options) {
+            Ok(output) => ConversionPlanEntry {
+                index,
+                input: options.input.clone(),
+                exists: output.exists(),
+                output: Some(output.to_string_lossy().to_string()),
+                error: None,
+            },
+            Err(error) => ConversionPlanEntry {
+                index,
+                input: options.input.clone(),
+                output: None,
+                exists: false,
+                error: Some(error),
+            },
+        })
+        .collect()
 }
 
 fn temp_file(out: &Path) -> Result<(PathBuf, File), String> {
@@ -905,6 +939,42 @@ mod tests {
         assert_eq!(summary.skipped, 0);
         assert_eq!(summary.failed, 0);
         assert!(out_dir.join("sample.jpg").exists());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn conversion_plan_reports_existing_outputs_per_entry() {
+        let dir = unique_test_dir("plan-existing");
+        let out_dir = dir.join("out");
+        fs::create_dir_all(&out_dir).unwrap();
+        let input = dir.join("sample.png");
+        let output = out_dir.join("sample.jpg");
+        fs::write(&input, one_by_one_png()).unwrap();
+        fs::write(&output, b"old").unwrap();
+
+        let options = ConvertOptions {
+            input: input.to_string_lossy().to_string(),
+            out_dir: Some(out_dir.to_string_lossy().to_string()),
+            format: "jpeg".to_string(),
+            quality: 80,
+            lossless: false,
+            overwrite: false,
+            overwrite_mode: Some("ask".to_string()),
+            file_name_template: Some("%name%".to_string()),
+            preserve_metadata: Some(false),
+        };
+
+        let plan = conversion_plan(&[options]);
+
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].index, 0);
+        assert!(plan[0].exists);
+        assert_eq!(
+            plan[0].output.as_deref(),
+            Some(output.to_string_lossy().as_ref())
+        );
+        assert!(plan[0].error.is_none());
 
         fs::remove_dir_all(dir).unwrap();
     }

@@ -6,7 +6,8 @@ mod import;
 mod thumbnail;
 
 use convert::{
-    BatchProgressEvent, BatchState, BatchSummary, Capabilities, ConvertOptions, ConvertResult,
+    BatchProgressEvent, BatchState, BatchSummary, Capabilities, ConversionPlanEntry,
+    ConvertOptions, ConvertResult,
 };
 use import::{ImportScanResult, ImportScanState, ScanImportOptions};
 use tauri::ipc::Channel;
@@ -49,6 +50,16 @@ async fn convert_batch(
 
     state.finish(batch_id);
     result
+}
+
+/// 批量规划输出路径,供 ask 覆盖模式在转换开始前确认。
+#[tauri::command]
+async fn plan_conversions(
+    options: Vec<ConvertOptions>,
+) -> Result<Vec<ConversionPlanEntry>, String> {
+    tauri::async_runtime::spawn_blocking(move || convert::conversion_plan(&options))
+        .await
+        .map_err(|e| format!("转换规划任务调度失败: {e}"))
 }
 
 /// 请求取消当前批量任务。返回值表示是否找到正在运行的任务并发出取消信号。
@@ -102,6 +113,7 @@ pub fn run() {
             capabilities,
             convert_image,
             convert_batch,
+            plan_conversions,
             cancel_batch,
             scan_import_paths,
             cancel_import_scan,

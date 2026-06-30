@@ -1,6 +1,6 @@
 # 开发路线图
 
-> 📍 **当前进度(2026-06-30)**:P0.5 引擎尖刺已通(`imgconvert-core` 跑通 JPEG/PNG/WebP/AVIF,测试全绿)→ **P0「前端整顿」三项已落地**(组件化架构 + core 能力契约 + shadcn 控件/格式选择器)→ **P0.5 批量进度/取消协议与许可闭环已落地** → **P1 文件导入层、并发批量、导入元数据 ping 与异步缩略图最小闭环已落地**(拖拽/选择文件/选择文件夹统一走 Rust 扫描、过滤、去重;skip/overwrite 批量转换走受控文件级并发;导入时展示尺寸/常见 DPI;队列卡片懒加载缩略图)。下一步进入 P1 ask 覆盖统一协议与可靠性细节。详见 [DEVLOG.md](DEVLOG.md)。
+> 📍 **当前进度(2026-06-30)**:P0.5 引擎尖刺已通(`imgconvert-core` 跑通 JPEG/PNG/WebP/AVIF,测试全绿)→ **P0「前端整顿」三项已落地**(组件化架构 + core 能力契约 + shadcn 控件/格式选择器)→ **P0.5 批量进度/取消协议与许可闭环已落地** → **P1 文件导入层、并发批量、导入元数据 ping、异步缩略图与 ask 覆盖批量协议最小闭环已落地**(拖拽/选择文件/选择文件夹统一走 Rust 扫描、过滤、去重;ask/skip/overwrite 批量转换均走 Channel;导入时展示尺寸/常见 DPI;队列卡片懒加载缩略图)。下一步进入 P1 文件可靠性细节。详见 [DEVLOG.md](DEVLOG.md)。
 
 > 原则:**UI/UX 优先**——先把界面与交互做出来「看得见」,再逐步接真实功能与高级压缩。
 > 参考依据见 [REFERENCES.md](REFERENCES.md),引擎/打包设计见 [ENGINE.md](ENGINE.md)。
@@ -96,7 +96,7 @@
 - [x] **Rust 端并发批量最小闭环**(全局任务队列 + worker 上限)——已替换 skip/overwrite 路径的串行批量。
   - 外层全局并发上限(默认 `(available_parallelism-1).clamp(1,8)`)+ 用户可调并发已落地;**内存预算 / 大图场景降并发仍待做**。
   - 进程内无子进程,不存在 vips「多进程×多线程」过度并发问题,但 `libavif`(rav1e)/`oxipng` 本身吃内存且内部多线程(设 maxThreads=1),仍需控流。
-- [ ] **进度/取消统一走 Tauri Channel**(有序、低延迟、按调用作用域;`{index, percent, stage, status}`)。取消 = `CancellationToken`(见 ENGINE.md §7)。P1 并发批量已接入 Channel coordinator;仍需把 `ask` 覆盖策略纳入统一协议。
+- [x] **进度/取消统一走 Tauri Channel**(有序、低延迟、按调用作用域;`{index, percent, stage, status}`)。取消 = `CancellationToken`(见 ENGINE.md §7)。ask 覆盖策略已通过 `plan_conversions` 前置确认,实际转换统一走 batch Channel。
 - [x] 批处理三态(成功/跳过/错误)+ 单张失败不中断 + 末尾汇总
 - [x] **格式选择器由 core 支持矩阵驱动**(core 暴露可读/可写格式),别硬编码
 - [x] 导入 ping 尺寸/DPI(当前尺寸 + PNG `pHYs`/JPEG JFIF DPI;失败不阻断导入)
