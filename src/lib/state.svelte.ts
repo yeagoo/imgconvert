@@ -11,6 +11,7 @@ import { load, type Store } from "@tauri-apps/plugin-store";
 
 // ---- 类型 ----
 export type ItemStatus = "pending" | "running" | "done" | "skipped" | "error";
+export type ThumbnailStatus = "idle" | "loading" | "ready" | "skipped" | "error";
 export interface QueueItem {
   path: string;
   key: string;
@@ -19,6 +20,8 @@ export interface QueueItem {
   detail: string;
   targetFormat: string | null;
   metadata: ImageMetadata | null;
+  thumbnail: ThumbnailPreview | null;
+  thumbnailStatus: ThumbnailStatus;
   progress?: number;
   preview?: boolean;
 }
@@ -64,6 +67,19 @@ export interface BatchSummary {
   skipped: number;
   failed: number;
   cancelled: boolean;
+}
+export interface ThumbnailPreview {
+  url: string;
+  width: number;
+  height: number;
+  mime: string;
+}
+export interface ThumbnailResult {
+  input: string;
+  mime: string;
+  width: number;
+  height: number;
+  bytes: number[] | Uint8Array;
 }
 type ConvertRequest = {
   input: string;
@@ -132,6 +148,8 @@ const FORMAT_EXTENSIONS: Record<string, string[]> = {
   webp: ["webp"],
   avif: ["avif"],
 };
+const THUMBNAIL_MAX_EDGE = 180;
+const THUMBNAIL_CONCURRENCY = 2;
 
 export const FORMAT_CATEGORIES = [
   { value: "modern", label: "现代格式" },
@@ -338,6 +356,9 @@ export interface AddPathsResult {
 }
 
 type AddPathInput = string | ImportScanFile;
+const thumbnailQueue: QueueItem[] = [];
+const thumbnailQueuedKeys = new Set<string>();
+let thumbnailActive = 0;
 
 // ---- 队列操作(就地变更,保持响应式)----
 export function addPaths(paths: AddPathInput[]): AddPathsResult {
@@ -366,6 +387,8 @@ export function addPaths(paths: AddPathInput[]): AddPathsResult {
       detail: "",
       targetFormat: null,
       metadata: candidate.metadata ?? null,
+      thumbnail: null,
+      thumbnailStatus: "idle",
     });
     existingKeys.add(candidate.key);
     existingPaths.add(candidate.path);
@@ -466,6 +489,8 @@ export function addDemoItems() {
       detail: "网页预览示例",
       targetFormat: null,
       metadata: null,
+      thumbnail: null,
+      thumbnailStatus: "idle",
       preview: true,
     });
   }
@@ -501,11 +526,87 @@ export function resetItemFormats() {
 export function removeItem(path: string) {
   if (ui.converting || ui.importing) return;
   const i = queue.findIndex((it) => it.path === path);
-  if (i >= 0) queue.splice(i, 1);
+  if (i >= 0) {
+    disposeThumbnail(queue[i]);
+    thumbnailQueuedKeys.delete(queue[i].key);
+    queue.splice(i, 1);
+  }
 }
 export function clearQueue() {
   if (ui.converting || ui.importing) return;
+  for (const item of queue) {
+    disposeThumbnail(item);
+    thumbnailQueuedKeys.delete(item.key);
+  }
   queue.splice(0, queue.length);
+}
+
+// ---- 缩略图 ----
+export function ensureThumbnail(item: QueueItem) {
+  if (!isTauriRuntime() || item.preview) return;
+  if (item.thumbnailStatus !== "idle" && item.thumbnailStatus !== "error") return;
+  if (thumbnailQueuedKeys.has(item.key)) return;
+
+  item.thumbnailStatus = "loading";
+  thumbnailQueuedKeys.add(item.key);
+  thumbnailQueue.push(item);
+  void drainThumbnailQueue();
+}
+
+async function drainThumbnailQueue() {
+  while (thumbnailActive < THUMBNAIL_CONCURRENCY && thumbnailQueue.length > 0) {
+    const item = thumbnailQueue.shift();
+    if (!item) continue;
+    thumbnailQueuedKeys.delete(item.key);
+    if (!queue.includes(item)) continue;
+
+    thumbnailActive += 1;
+    void loadThumbnail(item).finally(() => {
+      thumbnailActive -= 1;
+      void drainThumbnailQueue();
+    });
+  }
+}
+
+async function loadThumbnail(item: QueueItem) {
+  try {
+    const result = await invoke<ThumbnailResult | null>("generate_thumbnail", {
+      options: {
+        input: item.path,
+        maxEdge: THUMBNAIL_MAX_EDGE,
+      },
+    });
+    if (!queue.includes(item)) return;
+    if (!result) {
+      item.thumbnailStatus = "skipped";
+      return;
+    }
+
+    const bytes = new Uint8Array(result.bytes);
+    const url = URL.createObjectURL(new Blob([bytes], { type: result.mime }));
+    disposeThumbnail(item);
+    item.thumbnail = {
+      url,
+      width: result.width,
+      height: result.height,
+      mime: result.mime,
+    };
+    item.thumbnailStatus = "ready";
+  } catch (e) {
+    if (!queue.includes(item)) return;
+    console.warn("缩略图生成失败:", e);
+    item.thumbnailStatus = "error";
+  }
+}
+
+function disposeThumbnail(item: QueueItem) {
+  if (item.thumbnail?.url) {
+    URL.revokeObjectURL(item.thumbnail.url);
+  }
+  item.thumbnail = null;
+  if (item.thumbnailStatus === "ready") {
+    item.thumbnailStatus = "idle";
+  }
 }
 
 // ---- 转换 ----

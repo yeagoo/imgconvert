@@ -107,6 +107,14 @@ pub struct Dpi {
     pub y: f64,
 }
 
+/// 缩略图编码结果。当前统一输出 PNG,便于前端以 Blob URL 直接显示。
+#[derive(Debug, Clone, PartialEq)]
+pub struct Thumbnail {
+    pub width: u32,
+    pub height: u32,
+    pub png: Vec<u8>,
+}
+
 /// 支持的格式(P0.5 范围)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -282,6 +290,57 @@ pub fn probe(input: &[u8]) -> Result<ImageProbe> {
         height,
         dpi,
     })
+}
+
+/// 生成最长边不超过 `max_edge` 的 PNG 缩略图。全透明图片返回 `Ok(None)`。
+pub fn thumbnail(input: &[u8], max_edge: u32) -> Result<Option<Thumbnail>> {
+    let src =
+        Format::from_magic(input).ok_or_else(|| Error::Unsupported("无法识别输入格式".into()))?;
+    let img = codec_for(src).decode(input)?;
+    if img.rgba.chunks_exact(4).all(|pixel| pixel[3] == 0) {
+        return Ok(None);
+    }
+
+    let max_edge = max_edge.clamp(32, 512);
+    let (width, height) = thumbnail_dimensions(img.width, img.height, max_edge);
+    let resized = if width == img.width && height == img.height {
+        image::RgbaImage::from_raw(img.width, img.height, img.rgba)
+            .ok_or_else(|| Error::Invalid("无法构造缩略图像素缓冲".into()))?
+    } else {
+        let source = image::RgbaImage::from_raw(img.width, img.height, img.rgba)
+            .ok_or_else(|| Error::Invalid("无法构造缩略图像素缓冲".into()))?;
+        image::imageops::resize(
+            &source,
+            width,
+            height,
+            image::imageops::FilterType::Triangle,
+        )
+    };
+    let png = encode_png_rgba(resized.width(), resized.height(), resized.as_raw())?;
+    Ok(Some(Thumbnail { width, height, png }))
+}
+
+fn thumbnail_dimensions(width: u32, height: u32, max_edge: u32) -> (u32, u32) {
+    if width <= max_edge && height <= max_edge {
+        return (width, height);
+    }
+
+    if width >= height {
+        let scaled_height = ((height as u64 * max_edge as u64) + (width as u64 / 2)) / width as u64;
+        (max_edge, scaled_height.max(1) as u32)
+    } else {
+        let scaled_width = ((width as u64 * max_edge as u64) + (height as u64 / 2)) / height as u64;
+        (scaled_width.max(1) as u32, max_edge)
+    }
+}
+
+fn encode_png_rgba(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>> {
+    use image::ImageEncoder;
+    let mut png = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut png)
+        .write_image(rgba, width, height, image::ExtendedColorType::Rgba8)
+        .map_err(|e| Error::Encode(e.to_string()))?;
+    Ok(png)
 }
 
 fn be_u16(bytes: &[u8]) -> Option<u16> {
@@ -545,17 +604,7 @@ impl Codec for PngCodec {
     fn encode(&self, img: &ImageData, _opts: &EncodeOptions) -> Result<Vec<u8>> {
         img.validate()?;
         // 先用 image 编出基础 PNG,再用 oxipng 无损优化。
-        use image::ImageEncoder;
-        let mut raw = Vec::new();
-        image::codecs::png::PngEncoder::new(&mut raw)
-            .write_image(
-                &img.rgba,
-                img.width,
-                img.height,
-                image::ExtendedColorType::Rgba8,
-            )
-            .map_err(|e| Error::Encode(e.to_string()))?;
-
+        let raw = encode_png_rgba(img.width, img.height, &img.rgba)?;
         let optimized = oxipng::optimize_from_memory(&raw, &oxipng::Options::from_preset(2))
             .map_err(|e| Error::Encode(format!("oxipng: {e}")))?;
         Ok(optimized)
@@ -884,6 +933,29 @@ mod tests {
         assert_eq!((jpg_probe.width, jpg_probe.height), (32, 24));
         assert_eq!(webp_probe.format, Format::WebP);
         assert_eq!((webp_probe.width, webp_probe.height), (32, 24));
+    }
+
+    #[test]
+    fn thumbnail_downscales_to_max_edge_png() {
+        let img = synth(320, 160);
+        let png = PngCodec.encode(&img, &EncodeOptions::default()).unwrap();
+        let thumb = thumbnail(&png, 96).unwrap().unwrap();
+
+        assert_eq!((thumb.width, thumb.height), (96, 48));
+        assert_eq!(Format::from_magic(&thumb.png), Some(Format::Png));
+        let decoded = PngCodec.decode(&thumb.png).unwrap();
+        assert_eq!((decoded.width, decoded.height), (96, 48));
+    }
+
+    #[test]
+    fn thumbnail_skips_fully_transparent_images() {
+        let mut img = synth(32, 32);
+        for pixel in img.rgba.chunks_exact_mut(4) {
+            pixel[3] = 0;
+        }
+        let png = PngCodec.encode(&img, &EncodeOptions::default()).unwrap();
+
+        assert!(thumbnail(&png, 96).unwrap().is_none());
     }
 
     #[test]

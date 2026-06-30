@@ -5,6 +5,32 @@
 
 ---
 
+## 2026-06-30 — P1 异步缩略图最小闭环
+
+Codex 完成 P1「异步生成缩略图」的第一版可运行闭环:
+
+- **core 缩略图接口**:`imgconvert-core::thumbnail(bytes, max_edge)` 复用现有 JPEG/PNG/WebP/AVIF 解码器,按最长边缩放并输出小 PNG;全透明图片返回 `None`,前端保留格式占位。
+- **Tauri 缩略图命令**:新增 `generate_thumbnail(options)`。前端只传已导入的本机路径,后端在 blocking 线程读取文件并返回 `{ mime, width, height, bytes }`;缩略图最大边限制在 `32..512`。
+- **前端异步懒加载**:队列卡片进入视口附近才请求缩略图,全局并发固定为 2;返回字节转 Blob URL 展示,移除/清空队列时释放 URL。
+- **卡片展示**:原先格式占位升级为稳定尺寸的预览区;缩略图加载中显示小 spinner,失败或全透明时继续显示格式图标,不影响转换状态。
+
+验证:
+
+- `pnpm run check`:通过(0 errors / 0 warnings)。
+- `pnpm run build`:通过。
+- `pnpm run license:check`:通过,未发现 GPL/AGPL/LGPL,第三方许可生成物保持最新。
+- `cargo test -p imgconvert-core`:通过(16 tests)。
+- `cargo clippy -p imgconvert-core -- -D warnings`:通过。
+- `cargo +1.96.0 test --manifest-path src-tauri/Cargo.toml`:通过(22 tests)。
+- `cargo +1.96.0 clippy --manifest-path src-tauri/Cargo.toml -- -D warnings`:通过。
+- `cargo fmt --check`、`cargo +1.96.0 fmt --manifest-path src-tauri/Cargo.toml --check`、`git diff --check`:通过。
+- `timeout 25s xvfb-run -a pnpm tauri dev`:按预期由 timeout 结束;启动链路到达 `Running target/debug/imgconvert`。
+
+限制:
+
+- 当前缩略图不做磁盘缓存;重新导入同一文件会重新生成。
+- 缩略图仍需完整解码源图,只是通过懒加载和并发 2 控制 CPU/内存峰值;后续大目录可再接虚拟列表或持久缓存。
+
 ## 2026-06-30 — P1 导入元数据 ping 最小闭环
 
 Codex 完成 P1「导入阶段尺寸/DPI ping」的第一版可运行闭环:

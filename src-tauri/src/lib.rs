@@ -3,6 +3,7 @@
 
 mod convert;
 mod import;
+mod thumbnail;
 
 use convert::{
     BatchProgressEvent, BatchState, BatchSummary, Capabilities, ConvertOptions, ConvertResult,
@@ -10,6 +11,7 @@ use convert::{
 use import::{ImportScanResult, ImportScanState, ScanImportOptions};
 use tauri::ipc::Channel;
 use tauri::State;
+use thumbnail::{ThumbnailOptions, ThumbnailResult};
 
 /// 返回进程内 core 的格式能力矩阵。
 #[tauri::command]
@@ -80,6 +82,14 @@ fn cancel_import_scan(state: State<'_, ImportScanState>) -> bool {
     state.cancel_current()
 }
 
+/// 为队列项生成缩略图。全透明图片返回 null,前端保留格式占位。
+#[tauri::command]
+async fn generate_thumbnail(options: ThumbnailOptions) -> Result<Option<ThumbnailResult>, String> {
+    tauri::async_runtime::spawn_blocking(move || thumbnail::generate_thumbnail(options))
+        .await
+        .map_err(|e| format!("缩略图任务调度失败: {e}"))?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -94,7 +104,8 @@ pub fn run() {
             convert_batch,
             cancel_batch,
             scan_import_paths,
-            cancel_import_scan
+            cancel_import_scan,
+            generate_thumbnail
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

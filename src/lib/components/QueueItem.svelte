@@ -1,5 +1,6 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 <script lang="ts">
+  import { onMount } from "svelte";
   import {
     ArrowsClockwise,
     CheckCircle,
@@ -14,6 +15,7 @@
     formatFromExt,
     formatImageMetadata,
     formatLabel,
+    ensureThumbnail,
     itemProgress,
     itemTargetFormat,
     removeItem,
@@ -24,6 +26,7 @@
   } from "$lib/state.svelte";
 
   let { item }: { item: QueueItem } = $props();
+  let root: HTMLLIElement | undefined;
 
   const busy = $derived(ui.converting || ui.importing);
   const sourceFormat = $derived(item.metadata?.format ?? formatFromExt(extOf(item.path)));
@@ -48,15 +51,49 @@
   function updateFormat(value: string) {
     setItemTargetFormat(item.path, value === "__global" ? null : value);
   }
+
+  onMount(() => {
+    if (!root) return;
+    if (typeof IntersectionObserver === "undefined") {
+      ensureThumbnail(item);
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          ensureThumbnail(item);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: "180px" },
+    );
+    observer.observe(root);
+    return () => observer.disconnect();
+  });
 </script>
 
 <li
+  bind:this={root}
   class="group grid min-h-40 grid-cols-[88px_minmax(0,1fr)] gap-3 rounded-lg border bg-background p-3 transition-colors ease-[var(--motion-ease-img)] hover:border-primary/35"
 >
   <div
     class="flex h-full min-h-32 flex-col justify-between rounded-md border p-2 {sourceAccent.border} {sourceAccent.background}"
   >
-    <Image size={24} weight="duotone" class={sourceAccent.text} />
+    <div class="relative flex h-20 items-center justify-center overflow-hidden rounded bg-background/65">
+      {#if item.thumbnailStatus === "ready" && item.thumbnail}
+        <img
+          src={item.thumbnail.url}
+          alt=""
+          class="h-full w-full object-cover"
+          draggable="false"
+        />
+      {:else if item.thumbnailStatus === "loading"}
+        <ArrowsClockwise size={22} class="animate-spin {sourceAccent.text}" />
+      {:else}
+        <Image size={24} weight="duotone" class={sourceAccent.text} />
+      {/if}
+    </div>
     <div class="space-y-1">
       <div class="text-[11px] font-medium uppercase tracking-wide {sourceAccent.text}">
         {sourceFormat ? formatLabel(sourceFormat) : "IMG"}
