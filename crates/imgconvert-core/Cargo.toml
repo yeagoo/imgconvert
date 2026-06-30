@@ -1,0 +1,21 @@
+[package]
+name = "imgconvert-core"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "ImgConvert 的进程内图像编解码核心(纯库,无 UI/IO 框架依赖)"
+
+[dependencies]
+# 解码/容器:default-features=false 避免带回 AVIF/ravif/rayon/nasm(Codex 修正)
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# JPEG 编码(底层 mozjpeg-sys:arm64 用 gas,x86 用 nasm)
+mozjpeg = "0.10"
+# PNG 无损优化(纯 Rust)
+oxipng = { version = "9", default-features = false, features = ["parallel"] }
+# WebP 编解码(底层 libwebp,cc 构建)
+webp = "0.3"
+# AVIF:libavif 容器 + rav1e 编码(纯 Rust)+ dav1d 解码(meson/ninja 构建);
+# 采 DropWebP 路线,取代裸 ravif,以正确保留 ICC/nclx/alpha。arm64 无需 nasm。
+libavif-sys = { version = "0.17", default-features = false, features = ["codec-rav1e", "codec-dav1d"] }
+
+[dev-dependencies]

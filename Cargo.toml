@@ -1,0 +1,6 @@
+# 工作区根。P0.5 阶段只含 imgconvert-core(纯库,与 Tauri/webkit 解耦,可在容器内编译测试)。
+# src-tauri 暂排除(其 webkit2gtk 依赖在 Linux 容器内无法 cargo check);P1 再把它纳入并以 path 依赖 core。
+[workspace]
+resolver = "2"
+members = ["crates/imgconvert-core"]
+exclude = ["src-tauri"]
