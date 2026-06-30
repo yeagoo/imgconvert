@@ -528,7 +528,7 @@ export function removeItem(path: string) {
   const i = queue.findIndex((it) => it.path === path);
   if (i >= 0) {
     disposeThumbnail(queue[i]);
-    thumbnailQueuedKeys.delete(queue[i].key);
+    removeQueuedThumbnail(queue[i]);
     queue.splice(i, 1);
   }
 }
@@ -536,8 +536,8 @@ export function clearQueue() {
   if (ui.converting || ui.importing) return;
   for (const item of queue) {
     disposeThumbnail(item);
-    thumbnailQueuedKeys.delete(item.key);
   }
+  resetThumbnailQueue();
   queue.splice(0, queue.length);
 }
 
@@ -584,6 +584,10 @@ async function loadThumbnail(item: QueueItem) {
 
     const bytes = new Uint8Array(result.bytes);
     const url = URL.createObjectURL(new Blob([bytes], { type: result.mime }));
+    if (!queue.includes(item)) {
+      URL.revokeObjectURL(url);
+      return;
+    }
     disposeThumbnail(item);
     item.thumbnail = {
       url,
@@ -607,6 +611,19 @@ function disposeThumbnail(item: QueueItem) {
   if (item.thumbnailStatus === "ready") {
     item.thumbnailStatus = "idle";
   }
+}
+
+function removeQueuedThumbnail(item: QueueItem) {
+  thumbnailQueuedKeys.delete(item.key);
+  const index = thumbnailQueue.findIndex((queuedItem) => queuedItem === item);
+  if (index >= 0) {
+    thumbnailQueue.splice(index, 1);
+  }
+}
+
+function resetThumbnailQueue() {
+  thumbnailQueue.splice(0, thumbnailQueue.length);
+  thumbnailQueuedKeys.clear();
 }
 
 // ---- 转换 ----

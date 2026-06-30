@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 const DEFAULT_THUMBNAIL_EDGE: u32 = 180;
 const MIN_THUMBNAIL_EDGE: u32 = 32;
 const MAX_THUMBNAIL_EDGE: u32 = 512;
+const MAX_THUMBNAIL_SOURCE_BYTES: u64 = 256 * 1024 * 1024;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -33,8 +34,12 @@ pub struct ThumbnailResult {
 
 pub fn generate_thumbnail(options: ThumbnailOptions) -> Result<Option<ThumbnailResult>, String> {
     let input = Path::new(&options.input);
-    if !input.exists() {
-        return Err(format!("输入文件不存在: {}", options.input));
+    let metadata = fs::metadata(input).map_err(|e| format!("无法读取输入文件信息: {e}"))?;
+    if !metadata.is_file() {
+        return Err(format!("输入路径不是文件: {}", options.input));
+    }
+    if metadata.len() > MAX_THUMBNAIL_SOURCE_BYTES {
+        return Ok(None);
     }
 
     let source = fs::read(input).map_err(|e| format!("无法读取输入文件: {e}"))?;
@@ -154,6 +159,27 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let input = dir.join("transparent.png");
         fs::write(&input, one_by_one_png([255, 255, 255, 0])).unwrap();
+
+        let result = generate_thumbnail(ThumbnailOptions {
+            input: input.to_string_lossy().to_string(),
+            max_edge: None,
+        })
+        .unwrap();
+
+        assert!(result.is_none());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn thumbnail_command_skips_oversized_source_files_before_reading() {
+        let dir = unique_test_dir("oversized");
+        fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("huge.png");
+        fs::File::create(&input)
+            .unwrap()
+            .set_len(MAX_THUMBNAIL_SOURCE_BYTES + 1)
+            .unwrap();
 
         let result = generate_thumbnail(ThumbnailOptions {
             input: input.to_string_lossy().to_string(),
