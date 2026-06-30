@@ -1,0 +1,41 @@
+# cargo-deny 配置 —— 守住 Apache-2.0 + 上架的「纯宽松」底线。
+# 安装:cargo install cargo-deny   运行:cd src-tauri && cargo deny check licenses
+#
+# 策略:项目是 Apache-2.0,且要静态链接 + 上架 MAS/MS Store/Flathub。
+# 因此**只放行宽松许可**;任何 GPL/AGPL/LGPL 都会被标记 —— 它们会传染静态链接的
+# 二进制 / 与商店分发不兼容,必须人工审查并移除(见 docs/LEGAL.md 红线表)。
+
+[licenses]
+confidence-threshold = 0.9
+allow = [
+  # 宽松许可(可静态链接、可商用上架)
+  "Apache-2.0",
+  "MIT",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "MPL-2.0",             # 文件级 copyleft,可链接(改动其文件需公开)
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+  "CC0-1.0",
+  "Unlicense",
+  "BSL-1.0",
+]
+
+# ⛔ 故意**不**放行任何 GPL / AGPL / LGPL:
+#   - GPL/AGPL:静态链接传染整个二进制,与上架/闭源不兼容。
+#   - LGPL:要求可重新链接,静态链接 + App Store DRM 不可行。
+# 若某依赖被标为上述许可,请替换为宽松等价物(见 docs/LEGAL.md),
+# 例如 imagequant(GPL)→ color_quant(MIT);dssim(AGPL)→ ssimulacra2。
+
+[advisories]
+# 默认拉取 RustSec 公告库,有漏洞则报错。
+yanked = "deny"
+
+[bans]
+multiple-versions = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
