@@ -2,7 +2,8 @@
 
 import { execFileSync } from "node:child_process";
 
-const forbidden = /\b(?:A?GPL|LGPL)(?:[- ]?(?:1|2|3)(?:\.0)?(?:-only|-or-later)?)?\b/i;
+const forbidden =
+  /\b(?:(?:A?GPL|LGPL)\s*v?(?:[- ]?(?:1|2(?:\.1)?|3)(?:\.0)?(?:-only|-or-later)?)?|GNU\s+(?:Affero\s+|Lesser\s+)?General\s+Public\s+License)\b/i;
 
 const output = execFileSync("pnpm", ["licenses", "list", "--json"], {
   encoding: "utf8",

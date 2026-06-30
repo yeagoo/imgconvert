@@ -81,7 +81,7 @@
 - [ ] **C 工具链尖刺**:Linux 三发行版 + arm64 各编译通过——NASM(x86)+ cmake/meson/ninja;**NASM 装好后加版本检测,失败给明确错误**。⚠️ **arm64 用原生 runner,别交叉**(Claude N4:dav1d meson cross-file + cmake toolchain 是出名的坑,无 Linux-arm64 交叉先例);若必须交叉则列为高风险待验证。
 - [ ] **文件访问抽象尖刺(新增,前移)**:把「读输入目录 / 写输出目录」抽象成显式授权模型,先在 **Flatpak portal** 下跑通(拿到的可能是 portal 路径,非真实路径);确保该抽象**日后能换 macOS security-scoped bookmark**。← 决定 P1 文件 API,不能拖到 P3(评审一致)。
 - [ ] **并发尖刺**:文件级信号量并发下不 oversubscribe / 不 OOM(评审 #4)。⚠️ **验收(Claude N3)**:设 libavif `maxThreads=1` 后**实测 rav1e 是否仍另起自己的 rayon 全局池**(`libavif-sys` 的 maxThreads 控的是 libavif tile 线程,未必压住 rav1e)——若是,需显式设 rav1e 线程池或关其 threading 特性。
-- [x] **许可清单尖刺**:`cargo-about` 生成 `THIRD_PARTY_LICENSES`;**做应用内「开源许可」页**(全文,含 IJG/BSD/Apache NOTICE);`cargo deny` 禁 GPL/AGPL/LGPL。⚠️ npm 侧当前用 `pnpm licenses list --long` 生成归属清单 + 自写 GPL/AGPL/LGPL 扫描,发布前还需人工复核 npm 包全文归属。
+- [x] **许可清单尖刺**:`cargo-about` 生成 `THIRD_PARTY_LICENSES`;**做应用内「开源许可」页**(全文,含 IJG/BSD/Apache NOTICE);`cargo deny` 禁 GPL/AGPL/LGPL。npm 侧读取已安装包的 LICENSE/NOTICE/COPYING 文件并纳入生成物;少量缺失文件的 npm 包在生成物中标记,发布前人工复核。
 - [x] **进度/取消协议**:Tauri **Channel** + `CancellationToken` 最小闭环。当前 `convert_batch` 串行执行,取消在文件边界生效;P1 再接文件级并发/信号量/内存预算。
 - [ ] **最小 CI**:`cargo fmt --check`、`cargo clippy`、`cargo test`、`cargo deny check`、`pnpm run check`、`pnpm run build`。
 - [ ] **(macOS 阶段)系统 HEIC 尖刺**:`objc2`/`core-graphics` 调 ImageIO 读写 HEIC,**且必须在 App Sandbox 内验证编码成功**(评审:沙盒内 HEVC 编码能否用需实测)。

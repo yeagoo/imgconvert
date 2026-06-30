@@ -63,6 +63,8 @@
     }
 
     const sel = await open({ directory: true, multiple: false });
+    if (ui.converting) return;
+
     if (typeof sel === "string") {
       settings.outDir = sel;
       outputMessage = "";
