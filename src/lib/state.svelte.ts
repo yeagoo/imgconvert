@@ -16,6 +16,7 @@ export interface QueueItem {
   path: string;
   key: string;
   name: string;
+  relativeDir: string | null;
   status: ItemStatus;
   detail: string;
   targetFormat: string | null;
@@ -44,6 +45,7 @@ export interface ImportScanError {
 export interface ImportScanFile {
   path: string;
   key: string;
+  relativeDir: string | null;
   metadata: ImageMetadata | null;
 }
 export interface ImageMetadata {
@@ -96,6 +98,7 @@ type ConvertRequest = {
   overwrite: boolean;
   overwriteMode: OverwriteMode;
   outDir: string | null;
+  relativeDir: string | null;
   fileNameTemplate: string;
   preserveMetadata: boolean;
 };
@@ -390,6 +393,7 @@ export function addPaths(paths: AddPathInput[]): AddPathsResult {
       path: candidate.path,
       key: candidate.key,
       name: baseName(candidate.path),
+      relativeDir: candidate.relativeDir ?? null,
       status: "pending",
       detail: "",
       targetFormat: null,
@@ -405,10 +409,13 @@ export function addPaths(paths: AddPathInput[]): AddPathsResult {
 }
 
 function normalizeAddPathInput(input: AddPathInput): ImportScanFile {
-  if (typeof input === "string") return { path: input, key: input, metadata: null };
+  if (typeof input === "string") {
+    return { path: input, key: input, relativeDir: null, metadata: null };
+  }
   return {
     path: input.path,
     key: input.key || input.path,
+    relativeDir: input.relativeDir ?? null,
     metadata: input.metadata ?? null,
   };
 }
@@ -492,6 +499,7 @@ export function addDemoItems() {
       path,
       key: path,
       name: baseName(path),
+      relativeDir: null,
       status: "pending",
       detail: "网页预览示例",
       targetFormat: null,
@@ -789,6 +797,7 @@ function buildConvertRequest(item: QueueItem, format: string): ConvertRequest {
     overwrite: settings.overwrite === "overwrite",
     overwriteMode: settings.overwrite,
     outDir: settings.outDir,
+    relativeDir: settings.outDir ? item.relativeDir : null,
     fileNameTemplate: settings.fileNameTemplate,
     preserveMetadata: false,
   };

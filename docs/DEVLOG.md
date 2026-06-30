@@ -5,6 +5,32 @@
 
 ---
 
+## 2026-06-30 — P1 文件可靠性:目录结构与时间戳
+
+Codex 完成 P1「保留目录结构 + 保留源文件修改时间」的第一版可运行闭环:
+
+- **导入相对目录**:`scan_import_paths` 对目录递归导入的文件返回 `relativeDir`,表示从用户选择的目录根到文件父目录的相对路径;直接导入单文件时为空。
+- **输出目录结构**:前端把队列项 `relativeDir` 传入转换参数;后端仅在设置了 `outDir` 时把安全相对目录拼到输出目录下,从而把目录导入结果输出为同样的子目录结构。
+- **路径穿越防护**:后端拒绝绝对路径、`..` 等非法相对目录片段,并对目录片段做文件名级清理,避免前端参数被篡改后写出授权输出目录外。
+- **保留修改时间**:转换开始前读取源文件 modified time,写出成功后 best-effort 设置到输出文件;覆盖写也先捕获源时间,避免同路径覆盖时丢失原始 mtime。
+
+验证:
+
+- `pnpm run check`:通过(0 errors / 0 warnings)。
+- `pnpm run build`:通过。
+- `pnpm run license:check`:通过,未发现 GPL/AGPL/LGPL,第三方许可生成物保持最新。
+- `cargo test -p imgconvert-core`:通过(16 tests)。
+- `cargo clippy -p imgconvert-core -- -D warnings`:通过。
+- `cargo +1.96.0 test --manifest-path src-tauri/Cargo.toml`:通过(28 tests)。
+- `cargo +1.96.0 clippy --manifest-path src-tauri/Cargo.toml -- -D warnings`:通过。
+- `cargo fmt --check`、`cargo +1.96.0 fmt --manifest-path src-tauri/Cargo.toml --check`、`git diff --check`:通过。
+- `timeout 25s xvfb-run -a pnpm tauri dev`:按预期由 timeout 结束;启动链路到达 `Running target/debug/imgconvert`。
+
+限制:
+
+- 当前保留的是修改时间(mtime),不是访问时间/创建时间。
+- 若目标文件系统不支持设置时间戳,转换不会因为时间戳设置失败而失败;后续如需要严格模式可把失败作为 warning 暴露给前端。
+
 ## 2026-06-30 — P1 ask 覆盖统一协议最小闭环
 
 Codex 完成 P1「ask 覆盖策略纳入批量协议」的第一版可运行闭环:

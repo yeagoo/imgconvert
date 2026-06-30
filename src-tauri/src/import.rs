@@ -55,6 +55,7 @@ pub struct ImportScanResult {
 pub struct ImportScanFile {
     pub path: String,
     pub key: String,
+    pub relative_dir: Option<String>,
     pub metadata: Option<ImportImageMetadata>,
 }
 
@@ -101,10 +102,12 @@ struct ScanLimits {
 struct PendingPath {
     path: PathBuf,
     depth: usize,
+    relative_base: Option<PathBuf>,
 }
 
 struct ScannedFile {
     path: PathBuf,
+    relative_dir: Option<PathBuf>,
     metadata: Option<ImportImageMetadata>,
 }
 
@@ -240,7 +243,7 @@ impl Scanner {
     fn scan(&mut self, paths: Vec<String>) {
         let mut stack = Vec::new();
         for raw_path in paths.into_iter().rev() {
-            if !self.push_path(&mut stack, PathBuf::from(raw_path), 0) {
+            if !self.push_path(&mut stack, PathBuf::from(raw_path), 0, None) {
                 break;
             }
         }
@@ -253,7 +256,13 @@ impl Scanner {
         }
     }
 
-    fn push_path(&mut self, stack: &mut Vec<PendingPath>, path: PathBuf, depth: usize) -> bool {
+    fn push_path(
+        &mut self,
+        stack: &mut Vec<PendingPath>,
+        path: PathBuf,
+        depth: usize,
+        relative_base: Option<PathBuf>,
+    ) -> bool {
         if self.should_stop() {
             return false;
         }
@@ -268,7 +277,11 @@ impl Scanner {
         }
 
         self.entries_seen += 1;
-        stack.push(PendingPath { path, depth });
+        stack.push(PendingPath {
+            path,
+            depth,
+            relative_base,
+        });
         true
     }
 
@@ -283,17 +296,17 @@ impl Scanner {
 
         let file_type = metadata.file_type();
         if file_type.is_symlink() {
-            self.scan_symlink(pending.path);
+            self.scan_symlink(pending.path, pending.relative_base.as_deref());
         } else if file_type.is_file() {
-            self.consider_file(pending.path);
+            self.consider_file(pending.path, pending.relative_base.as_deref());
         } else if file_type.is_dir() {
-            self.scan_dir(pending.path, pending.depth, stack);
+            self.scan_dir(pending.path, pending.depth, pending.relative_base, stack);
         } else {
             self.skipped += 1;
         }
     }
 
-    fn scan_symlink(&mut self, path: PathBuf) {
+    fn scan_symlink(&mut self, path: PathBuf, relative_base: Option<&Path>) {
         let metadata = match fs::metadata(&path) {
             Ok(metadata) => metadata,
             Err(error) => {
@@ -303,14 +316,20 @@ impl Scanner {
         };
 
         if metadata.is_file() {
-            self.consider_file(path);
+            self.consider_file(path, relative_base);
         } else {
             // 不递归符号链接目录，避免循环和越过用户明确选择的目录边界。
             self.skipped += 1;
         }
     }
 
-    fn scan_dir(&mut self, path: PathBuf, depth: usize, stack: &mut Vec<PendingPath>) {
+    fn scan_dir(
+        &mut self,
+        path: PathBuf,
+        depth: usize,
+        relative_base: Option<PathBuf>,
+        stack: &mut Vec<PendingPath>,
+    ) {
         if !self.recursive {
             self.skipped += 1;
             return;
@@ -331,13 +350,19 @@ impl Scanner {
             }
         };
 
+        let child_relative_base = relative_base.unwrap_or_else(|| path.clone());
         for entry in entries {
             if self.should_stop() {
                 break;
             }
             match entry {
                 Ok(entry) => {
-                    if !self.push_path(stack, entry.path(), child_depth) {
+                    if !self.push_path(
+                        stack,
+                        entry.path(),
+                        child_depth,
+                        Some(child_relative_base.clone()),
+                    ) {
                         break;
                     }
                 }
@@ -346,7 +371,7 @@ impl Scanner {
         }
     }
 
-    fn consider_file(&mut self, path: PathBuf) {
+    fn consider_file(&mut self, path: PathBuf, relative_base: Option<&Path>) {
         if !self.has_allowed_extension(&path) {
             self.skipped += 1;
             return;
@@ -362,7 +387,15 @@ impl Scanner {
         }
 
         let metadata = probe_file_metadata(&path);
-        self.files.insert(key, ScannedFile { path, metadata });
+        let relative_dir = relative_dir_for(&path, relative_base);
+        self.files.insert(
+            key,
+            ScannedFile {
+                path,
+                relative_dir,
+                metadata,
+            },
+        );
         if self.files.len() >= self.limits.max_files {
             self.truncate("文件数量达到上限");
         }
@@ -400,6 +433,10 @@ impl Scanner {
                 Some(path) => files.push(ImportScanFile {
                     path: path.to_string(),
                     key: key.to_string_lossy().to_string(),
+                    relative_dir: file
+                        .relative_dir
+                        .as_ref()
+                        .map(|relative_dir| relative_dir.to_string_lossy().to_string()),
                     metadata: file.metadata,
                 }),
                 None => {
@@ -424,6 +461,17 @@ impl Scanner {
             path: path.to_string_lossy().to_string(),
             message: message.into(),
         });
+    }
+}
+
+fn relative_dir_for(path: &Path, relative_base: Option<&Path>) -> Option<PathBuf> {
+    let base = relative_base?;
+    let parent = path.parent()?;
+    let relative = parent.strip_prefix(base).ok()?;
+    if relative.as_os_str().is_empty() {
+        None
+    } else {
+        Some(relative.to_path_buf())
     }
 }
 
@@ -558,6 +606,25 @@ mod tests {
         );
         assert_eq!(result.skipped, 0);
         assert!(result.errors.is_empty());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn directory_scan_reports_relative_output_directories() {
+        let dir = unique_test_dir("relative-dir");
+        let nested = dir.join("album").join("day-1");
+        fs::create_dir_all(&nested).unwrap();
+        let file = nested.join("image.png");
+        fs::write(&file, png_with_dimensions(4, 3)).unwrap();
+
+        let result = scan(options(vec![dir.clone()]));
+
+        assert_eq!(result.files.len(), 1);
+        assert_eq!(
+            result.files[0].relative_dir.as_deref(),
+            Some(Path::new("album").join("day-1").to_string_lossy().as_ref())
+        );
 
         fs::remove_dir_all(dir).unwrap();
     }

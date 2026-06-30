@@ -7,7 +7,7 @@
 //! 覆盖策略和前端能力矩阵。
 
 use std::collections::{HashSet, VecDeque};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File, FileTimes, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -54,6 +54,8 @@ pub struct ConvertOptions {
     pub input: String,
     /// 输出目录(若为空则与输入同目录)。
     pub out_dir: Option<String>,
+    /// 从导入目录根到输入文件父目录的相对目录,用于保留目录结构。
+    pub relative_dir: Option<String>,
     /// 目标格式:avif | webp | jpeg | png。
     pub format: String,
     /// 质量 1-100(有损时生效)。
@@ -297,7 +299,13 @@ fn output_path(opts: &ConvertOptions) -> Result<PathBuf, String> {
     let output_stem = apply_file_name_template(opts.file_name_template.as_deref(), &stem, ext);
 
     let dir: PathBuf = match opts.out_dir.as_deref() {
-        Some(d) if !d.is_empty() => PathBuf::from(d),
+        Some(d) if !d.is_empty() => {
+            let mut dir = PathBuf::from(d);
+            if let Some(relative_dir) = safe_relative_dir(opts.relative_dir.as_deref())? {
+                dir.push(relative_dir);
+            }
+            dir
+        }
         _ => input
             .parent()
             .map(Path::to_path_buf)
@@ -307,6 +315,40 @@ fn output_path(opts: &ConvertOptions) -> Result<PathBuf, String> {
     let mut out = dir.join(output_stem);
     out.set_extension(ext);
     Ok(out)
+}
+
+fn safe_relative_dir(relative_dir: Option<&str>) -> Result<Option<PathBuf>, String> {
+    let Some(relative_dir) = relative_dir
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+
+    let path = Path::new(relative_dir);
+    if path.is_absolute() {
+        return Err(format!("输出相对目录不能是绝对路径: {relative_dir}"));
+    }
+
+    let mut safe = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(part) => {
+                let part = sanitize_file_stem(&part.to_string_lossy());
+                if !part.is_empty() {
+                    safe.push(part);
+                }
+            }
+            std::path::Component::CurDir => {}
+            _ => return Err(format!("输出相对目录包含非法路径片段: {relative_dir}")),
+        }
+    }
+
+    if safe.as_os_str().is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(safe))
+    }
 }
 
 pub fn conversion_plan(options: &[ConvertOptions]) -> Vec<ConversionPlanEntry> {
@@ -428,6 +470,9 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertResult, String> {
     }
 
     let out = output_path(opts)?;
+    let source_modified = fs::metadata(input)
+        .and_then(|metadata| metadata.modified())
+        .ok();
     let overwrite_mode = match opts.overwrite_mode.as_deref() {
         Some(mode @ ("ask" | "skip" | "overwrite")) => mode,
         Some(other) => return Err(format!("不支持的覆盖策略: {other}")),
@@ -462,6 +507,9 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertResult, String> {
         WriteMode::CreateNew
     };
     write_output(&out, &encoded, write_mode)?;
+    if let Some(modified) = source_modified {
+        let _ = set_modified_time(&out, modified);
+    }
 
     let in_size = fs::metadata(input).map(|m| m.len()).unwrap_or(0);
     let out_size = fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
@@ -472,6 +520,15 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertResult, String> {
         in_size,
         out_size,
     })
+}
+
+fn set_modified_time(path: &Path, modified: SystemTime) -> Result<(), String> {
+    let file = OpenOptions::new()
+        .write(true)
+        .open(path)
+        .map_err(|e| format!("无法打开输出文件以保留时间戳: {e}"))?;
+    file.set_times(FileTimes::new().set_modified(modified))
+        .map_err(|e| format!("无法保留源文件修改时间: {e}"))
 }
 
 pub fn convert_batch(
@@ -922,6 +979,7 @@ mod tests {
         let options = ConvertOptions {
             input: input.to_string_lossy().to_string(),
             out_dir: Some(out_dir.to_string_lossy().to_string()),
+            relative_dir: None,
             format: "jpeg".to_string(),
             quality: 80,
             lossless: false,
@@ -956,6 +1014,7 @@ mod tests {
         let options = ConvertOptions {
             input: input.to_string_lossy().to_string(),
             out_dir: Some(out_dir.to_string_lossy().to_string()),
+            relative_dir: None,
             format: "jpeg".to_string(),
             quality: 80,
             lossless: false,
@@ -980,6 +1039,57 @@ mod tests {
     }
 
     #[test]
+    fn output_path_preserves_safe_relative_directory_under_out_dir() {
+        let dir = unique_test_dir("relative-output");
+        let input = dir.join("source").join("photo.png");
+        let out_dir = dir.join("out");
+        fs::create_dir_all(input.parent().unwrap()).unwrap();
+        fs::write(&input, one_by_one_png()).unwrap();
+
+        let options = ConvertOptions {
+            input: input.to_string_lossy().to_string(),
+            out_dir: Some(out_dir.to_string_lossy().to_string()),
+            relative_dir: Some("album/day-1".to_string()),
+            format: "jpeg".to_string(),
+            quality: 80,
+            lossless: false,
+            overwrite: false,
+            overwrite_mode: Some("skip".to_string()),
+            file_name_template: Some("%name%".to_string()),
+            preserve_metadata: Some(false),
+        };
+
+        let output = output_path(&options).unwrap();
+
+        assert_eq!(
+            output,
+            out_dir.join("album").join("day-1").join("photo.jpg")
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn output_path_rejects_unsafe_relative_directory() {
+        let options = ConvertOptions {
+            input: "photo.png".to_string(),
+            out_dir: Some("out".to_string()),
+            relative_dir: Some("../escape".to_string()),
+            format: "jpeg".to_string(),
+            quality: 80,
+            lossless: false,
+            overwrite: false,
+            overwrite_mode: Some("skip".to_string()),
+            file_name_template: Some("%name%".to_string()),
+            preserve_metadata: Some(false),
+        };
+
+        let err = output_path(&options).unwrap_err();
+
+        assert!(err.contains("非法路径片段"));
+    }
+
+    #[test]
     fn batch_converts_multiple_files_with_requested_concurrency() {
         let dir = unique_test_dir("batch-convert-concurrent");
         let out_dir = dir.join("out");
@@ -994,6 +1104,7 @@ mod tests {
             .map(|input| ConvertOptions {
                 input: input.to_string_lossy().to_string(),
                 out_dir: Some(out_dir.to_string_lossy().to_string()),
+                relative_dir: None,
                 format: "jpeg".to_string(),
                 quality: 80,
                 lossless: false,
@@ -1034,6 +1145,7 @@ mod tests {
             .map(|input| ConvertOptions {
                 input: input.to_string_lossy().to_string(),
                 out_dir: Some(out_dir.to_string_lossy().to_string()),
+                relative_dir: None,
                 format: "jpeg".to_string(),
                 quality: 80,
                 lossless: false,
@@ -1052,6 +1164,41 @@ mod tests {
         assert_eq!(summary.failed, 1);
         assert!(!summary.cancelled);
         assert!(out_dir.join("sample.jpg").exists());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn convert_preserves_source_modified_time_on_output() {
+        let dir = unique_test_dir("preserve-mtime");
+        let out_dir = dir.join("out");
+        fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("sample.png");
+        fs::write(&input, one_by_one_png()).unwrap();
+        let modified = UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        set_modified_time(&input, modified).unwrap();
+
+        let options = ConvertOptions {
+            input: input.to_string_lossy().to_string(),
+            out_dir: Some(out_dir.to_string_lossy().to_string()),
+            relative_dir: Some("nested".to_string()),
+            format: "jpeg".to_string(),
+            quality: 80,
+            lossless: false,
+            overwrite: false,
+            overwrite_mode: Some("skip".to_string()),
+            file_name_template: Some("%name%".to_string()),
+            preserve_metadata: Some(false),
+        };
+
+        let result = convert(&options).unwrap();
+        let output_modified = fs::metadata(result.output).unwrap().modified().unwrap();
+        let delta = output_modified
+            .duration_since(modified)
+            .or_else(|_| modified.duration_since(output_modified))
+            .unwrap();
+
+        assert!(delta < std::time::Duration::from_secs(2));
 
         fs::remove_dir_all(dir).unwrap();
     }
@@ -1079,6 +1226,7 @@ mod tests {
         let options = ConvertOptions {
             input: input.to_string_lossy().to_string(),
             out_dir: Some(out_dir.to_string_lossy().to_string()),
+            relative_dir: None,
             format: "jpeg".to_string(),
             quality: 80,
             lossless: false,
@@ -1115,6 +1263,7 @@ mod tests {
         let options = ConvertOptions {
             input: input.to_string_lossy().to_string(),
             out_dir: Some(out_dir.to_string_lossy().to_string()),
+            relative_dir: None,
             format: "jpeg".to_string(),
             quality: 80,
             lossless: false,
