@@ -5,6 +5,33 @@
 
 ---
 
+## 2026-06-30 — P1 并发批量最小闭环
+
+Codex 完成 P1「Rust 端文件级并发批量」的第一版可运行闭环:
+
+- **受控文件级并发**:`convert_batch` 从串行循环改为全局工作队列 + 固定 worker 上限。默认并发为 `available_parallelism - 1` 后 clamp 到 `1..8`;前端新增「并发」滑块,`0` 表示自动,`1..8` 表示手动上限。
+- **Channel 汇聚**:worker 不直接操作 Tauri Channel,而是把单文件事件发送给 Rust coordinator;coordinator 统一按接收顺序发 `fileStarted` / `fileProgress` / `fileFinished` / `fileSkipped` / `fileError` / `finished`,前端既有队列进度处理保持不变。
+- **取消语义**:取消仍使用 `CancellationToken`,worker 在文件边界停止领取新任务;正在编码的单文件结束后再汇报。`ask` 覆盖策略仍走前端逐文件确认路径,并发批量覆盖 skip/overwrite 路径。
+
+验证:
+
+- `pnpm run check`:通过(0 errors / 0 warnings)。
+- `pnpm run build`:通过。
+- `pnpm run license:check`:通过,未发现 GPL/AGPL/LGPL,第三方许可生成物保持最新。
+- `cargo +1.96.0 test --manifest-path src-tauri/Cargo.toml`:通过(18 tests)。
+- `cargo +1.96.0 clippy --manifest-path src-tauri/Cargo.toml -- -D warnings`:通过。
+- `cargo test -p imgconvert-core`:通过(12 tests)。
+- `cargo clippy -p imgconvert-core -- -D warnings`:通过。
+- `cargo fmt --check`、`cargo +1.96.0 fmt --manifest-path src-tauri/Cargo.toml --check`、`git diff --check`:通过。
+- `timeout 25s xvfb-run -a pnpm tauri dev`:按预期由 timeout 结束;启动链路到达 `Running target/debug/imgconvert`。
+
+限制:
+
+- 尚未实现按图片尺寸/内存预算动态降并发。
+- `ask` 覆盖确认尚未纳入后端统一批量协议。
+
+---
+
 ## 2026-06-30 — P1 文件导入层最小闭环
 
 Codex 完成 P1「拖拽/文件夹导入」的第一版可运行闭环:

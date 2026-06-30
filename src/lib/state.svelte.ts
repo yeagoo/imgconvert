@@ -67,6 +67,10 @@ type ConvertRequest = {
   fileNameTemplate: string;
   preserveMetadata: boolean;
 };
+type BatchConvertRequest = {
+  options: ConvertRequest[];
+  concurrency: number | null;
+};
 type BatchProgressEvent =
   | { event: "started"; data: { total: number } }
   | { event: "fileStarted"; data: { index: number; input: string } }
@@ -100,6 +104,7 @@ export interface Settings {
   outDir: string | null;
   fileNameTemplate: string;
   preserveMetadata: boolean;
+  concurrency: number;
   theme: Theme;
   reduceMotion: boolean;
 }
@@ -172,6 +177,7 @@ export const settings = $state<Settings>({
   outDir: null,
   fileNameTemplate: "%name%",
   preserveMetadata: false,
+  concurrency: 0,
   theme: "system",
   reduceMotion: false,
 });
@@ -532,8 +538,12 @@ async function convertAllWithBatch() {
   });
 
   try {
-    const summary = await invoke<BatchSummary>("convert_batch", {
+    const request: BatchConvertRequest = {
       options: jobs.map((job) => job.options),
+      concurrency: batchConcurrency(),
+    };
+    const summary = await invoke<BatchSummary>("convert_batch", {
+      ...request,
       progress,
     });
     if (summary.cancelled) {
@@ -549,6 +559,11 @@ async function convertAllWithBatch() {
       }
     }
   }
+}
+
+function batchConcurrency(): number | null {
+  const concurrency = Math.round(settings.concurrency);
+  return concurrency > 0 ? Math.min(8, concurrency) : null;
 }
 
 async function convertAllWithAskPolicy() {
@@ -828,6 +843,11 @@ function normalizeSettings() {
     settings.fileNameTemplate = "%name%";
   }
   settings.preserveMetadata = false;
+  if (typeof settings.concurrency !== "number" || !Number.isFinite(settings.concurrency)) {
+    settings.concurrency = 0;
+  } else {
+    settings.concurrency = Math.min(8, Math.max(0, Math.round(settings.concurrency)));
+  }
   if (typeof settings.lossless !== "boolean") {
     settings.lossless = false;
   }

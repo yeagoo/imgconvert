@@ -6,11 +6,13 @@
 //! 图片编解码由 `imgconvert-core` 进程内完成；这里只负责路径解析、文件读写、
 //! 覆盖策略和前端能力矩阵。
 
+use std::collections::VecDeque;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use imgconvert_core::{
@@ -21,10 +23,16 @@ use tauri::ipc::Channel;
 use tokio_util::sync::CancellationToken;
 
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+const MAX_BATCH_CONCURRENCY: usize = 8;
 
 enum WriteMode {
     Replace,
     CreateNew,
+}
+
+struct IndexedConvertOptions {
+    index: usize,
+    options: ConvertOptions,
 }
 
 /// 前端启动时读取的进程内 core 能力矩阵。
@@ -436,6 +444,7 @@ pub fn convert_batch(
     options: Vec<ConvertOptions>,
     progress: Channel<BatchProgressEvent>,
     cancel: CancellationToken,
+    concurrency: Option<usize>,
 ) -> Result<BatchSummary, String> {
     let total = options.len();
     let mut summary = BatchSummary {
@@ -447,75 +456,64 @@ pub fn convert_batch(
     };
 
     send_progress(&progress, BatchProgressEvent::Started { total })?;
-
-    for (index, opts) in options.into_iter().enumerate() {
-        if cancel.is_cancelled() {
-            summary.cancelled = true;
-            send_progress(
-                &progress,
-                BatchProgressEvent::Cancelled {
-                    completed: summary.completed,
-                    total,
-                },
-            )?;
-            break;
-        }
-
+    if total == 0 {
         send_progress(
             &progress,
-            BatchProgressEvent::FileStarted {
-                index,
-                input: opts.input.clone(),
+            BatchProgressEvent::Finished {
+                summary: summary.clone(),
             },
         )?;
-        send_progress(
-            &progress,
-            BatchProgressEvent::FileProgress {
-                index,
-                percent: 5.0,
-                stage: "读取并转换",
-            },
-        )?;
+        return Ok(summary);
+    }
 
-        match convert(&opts) {
-            Ok(result) => {
-                summary.completed += 1;
-                send_progress(
-                    &progress,
-                    BatchProgressEvent::FileProgress {
-                        index,
-                        percent: 100.0,
-                        stage: "完成",
-                    },
-                )?;
-                send_progress(
-                    &progress,
-                    BatchProgressEvent::FileFinished { index, result },
-                )?;
+    let worker_count = resolve_batch_concurrency(concurrency, total);
+    let queue = Arc::new(Mutex::new(
+        options
+            .into_iter()
+            .enumerate()
+            .map(|(index, options)| IndexedConvertOptions { index, options })
+            .collect::<VecDeque<_>>(),
+    ));
+    let (tx, rx) = mpsc::channel::<BatchProgressEvent>();
+    let coordinator_cancel = cancel.clone();
+
+    let send_error = thread::scope(|scope| {
+        for _ in 0..worker_count {
+            let queue = Arc::clone(&queue);
+            let tx = tx.clone();
+            let worker_cancel = cancel.clone();
+            scope.spawn(move || {
+                batch_worker_loop(queue, tx, worker_cancel);
+            });
+        }
+        drop(tx);
+
+        let mut send_error = None;
+        for event in rx {
+            if send_error.is_some() {
+                continue;
             }
-            Err(message) if should_count_as_skipped(&opts, &message) => {
-                summary.skipped += 1;
-                send_progress(
-                    &progress,
-                    BatchProgressEvent::FileSkipped {
-                        index,
-                        input: opts.input,
-                        message,
-                    },
-                )?;
-            }
-            Err(message) => {
-                summary.failed += 1;
-                send_progress(
-                    &progress,
-                    BatchProgressEvent::FileError {
-                        index,
-                        input: opts.input,
-                        message,
-                    },
-                )?;
+            if let Err(error) = apply_batch_event(&progress, &mut summary, event) {
+                coordinator_cancel.cancel();
+                send_error = Some(error);
             }
         }
+        send_error
+    });
+
+    if let Some(error) = send_error {
+        return Err(error);
+    }
+
+    if cancel.is_cancelled() {
+        summary.cancelled = true;
+        send_progress(
+            &progress,
+            BatchProgressEvent::Cancelled {
+                completed: summary.completed,
+                total,
+            },
+        )?;
     }
 
     send_progress(
@@ -525,6 +523,139 @@ pub fn convert_batch(
         },
     )?;
     Ok(summary)
+}
+
+fn batch_worker_loop(
+    queue: Arc<Mutex<VecDeque<IndexedConvertOptions>>>,
+    tx: mpsc::Sender<BatchProgressEvent>,
+    cancel: CancellationToken,
+) {
+    loop {
+        if cancel.is_cancelled() {
+            break;
+        }
+
+        let Some(job) = next_batch_job(&queue) else {
+            break;
+        };
+        if cancel.is_cancelled() {
+            break;
+        }
+
+        let index = job.index;
+        let opts = job.options;
+        let input = opts.input.clone();
+
+        if send_worker_event(
+            &tx,
+            BatchProgressEvent::FileStarted {
+                index,
+                input: input.clone(),
+            },
+            &cancel,
+        )
+        .is_err()
+        {
+            break;
+        }
+        if send_worker_event(
+            &tx,
+            BatchProgressEvent::FileProgress {
+                index,
+                percent: 5.0,
+                stage: "读取并转换",
+            },
+            &cancel,
+        )
+        .is_err()
+        {
+            break;
+        }
+
+        let event = match convert(&opts) {
+            Ok(result) => BatchProgressEvent::FileFinished { index, result },
+            Err(message) if should_count_as_skipped(&opts, &message) => {
+                BatchProgressEvent::FileSkipped {
+                    index,
+                    input,
+                    message,
+                }
+            }
+            Err(message) => BatchProgressEvent::FileError {
+                index,
+                input,
+                message,
+            },
+        };
+
+        if send_worker_event(&tx, event, &cancel).is_err() {
+            break;
+        }
+    }
+}
+
+fn next_batch_job(
+    queue: &Arc<Mutex<VecDeque<IndexedConvertOptions>>>,
+) -> Option<IndexedConvertOptions> {
+    queue.lock().ok()?.pop_front()
+}
+
+fn send_worker_event(
+    tx: &mpsc::Sender<BatchProgressEvent>,
+    event: BatchProgressEvent,
+    cancel: &CancellationToken,
+) -> Result<(), ()> {
+    tx.send(event).map_err(|_| {
+        cancel.cancel();
+    })
+}
+
+fn apply_batch_event(
+    progress: &Channel<BatchProgressEvent>,
+    summary: &mut BatchSummary,
+    event: BatchProgressEvent,
+) -> Result<(), String> {
+    match &event {
+        BatchProgressEvent::FileFinished { .. } => summary.completed += 1,
+        BatchProgressEvent::FileSkipped { .. } => summary.skipped += 1,
+        BatchProgressEvent::FileError { .. } => summary.failed += 1,
+        _ => {}
+    }
+    if matches!(event, BatchProgressEvent::FileFinished { .. }) {
+        let index = match &event {
+            BatchProgressEvent::FileFinished { index, .. } => *index,
+            _ => unreachable!(),
+        };
+        send_progress(
+            progress,
+            BatchProgressEvent::FileProgress {
+                index,
+                percent: 100.0,
+                stage: "完成",
+            },
+        )?;
+    }
+    send_progress(progress, event)
+}
+
+fn resolve_batch_concurrency(requested: Option<usize>, total: usize) -> usize {
+    if total == 0 {
+        return 0;
+    }
+
+    requested
+        .filter(|value| *value > 0)
+        .unwrap_or_else(default_batch_concurrency)
+        .clamp(1, MAX_BATCH_CONCURRENCY)
+        .min(total)
+}
+
+fn default_batch_concurrency() -> usize {
+    thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(2)
+        .saturating_sub(1)
+        .clamp(1, MAX_BATCH_CONCURRENCY)
 }
 
 fn send_progress(
@@ -667,7 +798,7 @@ mod tests {
     #[test]
     fn batch_empty_options_finishes_cleanly() {
         let progress = Channel::<BatchProgressEvent>::new(|_| Ok(()));
-        let summary = convert_batch(Vec::new(), progress, CancellationToken::new()).unwrap();
+        let summary = convert_batch(Vec::new(), progress, CancellationToken::new(), None).unwrap();
 
         assert_eq!(summary.total, 0);
         assert_eq!(summary.completed, 0);
@@ -696,7 +827,8 @@ mod tests {
             preserve_metadata: Some(false),
         };
         let progress = Channel::<BatchProgressEvent>::new(|_| Ok(()));
-        let summary = convert_batch(vec![options], progress, CancellationToken::new()).unwrap();
+        let summary =
+            convert_batch(vec![options], progress, CancellationToken::new(), Some(2)).unwrap();
 
         assert_eq!(summary.total, 1);
         assert_eq!(summary.completed, 1);
@@ -705,6 +837,55 @@ mod tests {
         assert!(out_dir.join("sample.jpg").exists());
 
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn batch_converts_multiple_files_with_requested_concurrency() {
+        let dir = unique_test_dir("batch-convert-concurrent");
+        let out_dir = dir.join("out");
+        fs::create_dir_all(&dir).unwrap();
+        let input_a = dir.join("sample-a.png");
+        let input_b = dir.join("sample-b.png");
+        fs::write(&input_a, one_by_one_png()).unwrap();
+        fs::write(&input_b, one_by_one_png()).unwrap();
+
+        let options = [input_a.clone(), input_b.clone()]
+            .into_iter()
+            .map(|input| ConvertOptions {
+                input: input.to_string_lossy().to_string(),
+                out_dir: Some(out_dir.to_string_lossy().to_string()),
+                format: "jpeg".to_string(),
+                quality: 80,
+                lossless: false,
+                overwrite: false,
+                overwrite_mode: Some("skip".to_string()),
+                file_name_template: Some("%name%".to_string()),
+                preserve_metadata: Some(false),
+            })
+            .collect();
+        let progress = Channel::<BatchProgressEvent>::new(|_| Ok(()));
+        let summary = convert_batch(options, progress, CancellationToken::new(), Some(2)).unwrap();
+
+        assert_eq!(summary.total, 2);
+        assert_eq!(summary.completed, 2);
+        assert_eq!(summary.skipped, 0);
+        assert_eq!(summary.failed, 0);
+        assert!(out_dir.join("sample-a.jpg").exists());
+        assert!(out_dir.join("sample-b.jpg").exists());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn batch_concurrency_respects_default_bounds_request_and_total() {
+        assert_eq!(resolve_batch_concurrency(Some(0), 0), 0);
+        assert_eq!(resolve_batch_concurrency(Some(1), 10), 1);
+        assert_eq!(
+            resolve_batch_concurrency(Some(999), 10),
+            MAX_BATCH_CONCURRENCY
+        );
+        assert_eq!(resolve_batch_concurrency(Some(999), 3), 3);
+        assert!((1..=MAX_BATCH_CONCURRENCY).contains(&resolve_batch_concurrency(None, 999)));
     }
 
     #[test]
@@ -729,7 +910,7 @@ mod tests {
         let token = CancellationToken::new();
         token.cancel();
         let progress = Channel::<BatchProgressEvent>::new(|_| Ok(()));
-        let summary = convert_batch(vec![options], progress, token).unwrap();
+        let summary = convert_batch(vec![options], progress, token, Some(2)).unwrap();
 
         assert_eq!(summary.total, 1);
         assert_eq!(summary.completed, 0);
@@ -763,7 +944,8 @@ mod tests {
             preserve_metadata: Some(false),
         };
         let progress = Channel::<BatchProgressEvent>::new(|_| Ok(()));
-        let summary = convert_batch(vec![options], progress, CancellationToken::new()).unwrap();
+        let summary =
+            convert_batch(vec![options], progress, CancellationToken::new(), Some(2)).unwrap();
 
         assert_eq!(summary.total, 1);
         assert_eq!(summary.completed, 0);
@@ -780,7 +962,7 @@ mod tests {
         let progress = Channel::<BatchProgressEvent>::new(|_| {
             Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "closed").into())
         });
-        let err = convert_batch(Vec::new(), progress, CancellationToken::new()).unwrap_err();
+        let err = convert_batch(Vec::new(), progress, CancellationToken::new(), None).unwrap_err();
 
         assert!(err.contains("无法发送批量进度事件"));
     }

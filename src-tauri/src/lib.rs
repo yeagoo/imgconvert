@@ -31,6 +31,7 @@ async fn convert_image(options: ConvertOptions) -> Result<ConvertResult, String>
 async fn convert_batch(
     options: Vec<ConvertOptions>,
     progress: Channel<BatchProgressEvent>,
+    concurrency: Option<usize>,
     state: State<'_, BatchState>,
 ) -> Result<BatchSummary, String> {
     let batch = state.begin()?;
@@ -38,7 +39,7 @@ async fn convert_batch(
     let cancel = batch.token();
 
     let result = tauri::async_runtime::spawn_blocking(move || {
-        convert::convert_batch(options, progress, cancel)
+        convert::convert_batch(options, progress, cancel, concurrency)
     })
     .await
     .map_err(|e| format!("批量任务调度失败: {e}"))

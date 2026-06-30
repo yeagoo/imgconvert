@@ -32,6 +32,9 @@
   );
   const canLossless = $derived(supportsLossless(settings.format));
   const lossyEnabled = $derived(!(canLossless && settings.lossless));
+  const concurrencyLabel = $derived(
+    settings.concurrency > 0 ? `${settings.concurrency}` : "自动",
+  );
   const overwriteLabel = $derived(
     settings.overwrite === "overwrite"
       ? "覆盖"
@@ -104,10 +107,17 @@
     persistSettings();
   }
 
+  function commitConcurrency() {
+    if (busy) return;
+
+    settings.concurrency = Math.min(8, Math.max(0, Math.round(settings.concurrency)));
+    persistSettings();
+  }
+
 </script>
 
 <section class="rounded-lg border bg-card p-4">
-  <div class="grid gap-4 lg:grid-cols-[220px_minmax(260px,1fr)_220px_220px]">
+  <div class="grid gap-4 lg:grid-cols-[220px_minmax(220px,1fr)_180px_180px_220px]">
   <div class="flex flex-col gap-1.5">
     <Label class="text-xs text-muted-foreground">目标格式</Label>
     <FormatSelect
@@ -133,6 +143,24 @@
         step={1}
         disabled={!lossyEnabled || busy}
         onValueCommit={persistSettings}
+      />
+    </div>
+  </div>
+
+  <div class="flex min-w-0 flex-col gap-2" class:opacity-40={busy}>
+    <div class="flex items-center justify-between gap-3">
+      <Label class="text-xs text-muted-foreground">并发</Label>
+      <b class="tabular-nums text-sm text-foreground">{concurrencyLabel}</b>
+    </div>
+    <div class="flex h-8 items-center">
+      <Slider
+        type="single"
+        bind:value={settings.concurrency}
+        min={0}
+        max={8}
+        step={1}
+        disabled={busy}
+        onValueCommit={commitConcurrency}
       />
     </div>
   </div>
