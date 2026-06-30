@@ -70,6 +70,11 @@
   });
 
   function choose(next: string) {
+    if (disabled) {
+      open = false;
+      return;
+    }
+
     value = next;
     open = false;
     onChange?.(next);

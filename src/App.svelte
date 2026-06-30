@@ -55,6 +55,11 @@
     if (!runningInTauri) return;
 
     const unlisten = getCurrentWebview().onDragDropEvent((event) => {
+      if (ui.converting) {
+        ui.dragActive = false;
+        return;
+      }
+
       if (event.payload.type === "over") {
         ui.dragActive = true;
       } else if (event.payload.type === "drop") {

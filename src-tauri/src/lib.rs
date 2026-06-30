@@ -39,13 +39,14 @@ async fn convert_batch(
         convert::convert_batch(options, progress, cancel)
     })
     .await
-    .map_err(|e| format!("批量任务调度失败: {e}"));
+    .map_err(|e| format!("批量任务调度失败: {e}"))
+    .and_then(|inner| inner);
 
     state.finish(batch_id);
     result
 }
 
-/// 请求取消当前批量任务。若当前没有任务,视为幂等成功。
+/// 请求取消当前批量任务。返回值表示是否找到正在运行的任务并发出取消信号。
 #[tauri::command]
 fn cancel_batch(state: State<'_, BatchState>) -> bool {
     state.cancel_current()

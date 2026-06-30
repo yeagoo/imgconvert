@@ -436,7 +436,7 @@ pub fn convert_batch(
     options: Vec<ConvertOptions>,
     progress: Channel<BatchProgressEvent>,
     cancel: CancellationToken,
-) -> BatchSummary {
+) -> Result<BatchSummary, String> {
     let total = options.len();
     let mut summary = BatchSummary {
         total,
@@ -446,7 +446,7 @@ pub fn convert_batch(
         cancelled: false,
     };
 
-    send_progress(&progress, BatchProgressEvent::Started { total });
+    send_progress(&progress, BatchProgressEvent::Started { total })?;
 
     for (index, opts) in options.into_iter().enumerate() {
         if cancel.is_cancelled() {
@@ -457,7 +457,7 @@ pub fn convert_batch(
                     completed: summary.completed,
                     total,
                 },
-            );
+            )?;
             break;
         }
 
@@ -467,7 +467,7 @@ pub fn convert_batch(
                 index,
                 input: opts.input.clone(),
             },
-        );
+        )?;
         send_progress(
             &progress,
             BatchProgressEvent::FileProgress {
@@ -475,7 +475,7 @@ pub fn convert_batch(
                 percent: 5.0,
                 stage: "读取并转换",
             },
-        );
+        )?;
 
         match convert(&opts) {
             Ok(result) => {
@@ -487,11 +487,11 @@ pub fn convert_batch(
                         percent: 100.0,
                         stage: "完成",
                     },
-                );
+                )?;
                 send_progress(
                     &progress,
                     BatchProgressEvent::FileFinished { index, result },
-                );
+                )?;
             }
             Err(message) if should_count_as_skipped(&opts, &message) => {
                 summary.skipped += 1;
@@ -502,7 +502,7 @@ pub fn convert_batch(
                         input: opts.input,
                         message,
                     },
-                );
+                )?;
             }
             Err(message) => {
                 summary.failed += 1;
@@ -513,7 +513,7 @@ pub fn convert_batch(
                         input: opts.input,
                         message,
                     },
-                );
+                )?;
             }
         }
     }
@@ -523,12 +523,17 @@ pub fn convert_batch(
         BatchProgressEvent::Finished {
             summary: summary.clone(),
         },
-    );
-    summary
+    )?;
+    Ok(summary)
 }
 
-fn send_progress(progress: &Channel<BatchProgressEvent>, event: BatchProgressEvent) {
-    let _ = progress.send(event);
+fn send_progress(
+    progress: &Channel<BatchProgressEvent>,
+    event: BatchProgressEvent,
+) -> Result<(), String> {
+    progress
+        .send(event)
+        .map_err(|e| format!("无法发送批量进度事件: {e}"))
 }
 
 fn should_count_as_skipped(opts: &ConvertOptions, message: &str) -> bool {
@@ -662,7 +667,7 @@ mod tests {
     #[test]
     fn batch_empty_options_finishes_cleanly() {
         let progress = Channel::<BatchProgressEvent>::new(|_| Ok(()));
-        let summary = convert_batch(Vec::new(), progress, CancellationToken::new());
+        let summary = convert_batch(Vec::new(), progress, CancellationToken::new()).unwrap();
 
         assert_eq!(summary.total, 0);
         assert_eq!(summary.completed, 0);
@@ -691,7 +696,7 @@ mod tests {
             preserve_metadata: Some(false),
         };
         let progress = Channel::<BatchProgressEvent>::new(|_| Ok(()));
-        let summary = convert_batch(vec![options], progress, CancellationToken::new());
+        let summary = convert_batch(vec![options], progress, CancellationToken::new()).unwrap();
 
         assert_eq!(summary.total, 1);
         assert_eq!(summary.completed, 1);
@@ -700,5 +705,83 @@ mod tests {
         assert!(out_dir.join("sample.jpg").exists());
 
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn batch_cancelled_before_first_file_reports_cancelled() {
+        let dir = unique_test_dir("batch-cancel");
+        let out_dir = dir.join("out");
+        fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("sample.png");
+        fs::write(&input, one_by_one_png()).unwrap();
+
+        let options = ConvertOptions {
+            input: input.to_string_lossy().to_string(),
+            out_dir: Some(out_dir.to_string_lossy().to_string()),
+            format: "jpeg".to_string(),
+            quality: 80,
+            lossless: false,
+            overwrite: false,
+            overwrite_mode: Some("skip".to_string()),
+            file_name_template: Some("%name%".to_string()),
+            preserve_metadata: Some(false),
+        };
+        let token = CancellationToken::new();
+        token.cancel();
+        let progress = Channel::<BatchProgressEvent>::new(|_| Ok(()));
+        let summary = convert_batch(vec![options], progress, token).unwrap();
+
+        assert_eq!(summary.total, 1);
+        assert_eq!(summary.completed, 0);
+        assert_eq!(summary.skipped, 0);
+        assert_eq!(summary.failed, 0);
+        assert!(summary.cancelled);
+        assert!(!out_dir.join("sample.jpg").exists());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn batch_skip_mode_counts_existing_output_as_skipped() {
+        let dir = unique_test_dir("batch-skip-existing");
+        let out_dir = dir.join("out");
+        fs::create_dir_all(&out_dir).unwrap();
+        let input = dir.join("sample.png");
+        let output = out_dir.join("sample.jpg");
+        fs::write(&input, one_by_one_png()).unwrap();
+        fs::write(&output, b"old").unwrap();
+
+        let options = ConvertOptions {
+            input: input.to_string_lossy().to_string(),
+            out_dir: Some(out_dir.to_string_lossy().to_string()),
+            format: "jpeg".to_string(),
+            quality: 80,
+            lossless: false,
+            overwrite: false,
+            overwrite_mode: Some("skip".to_string()),
+            file_name_template: Some("%name%".to_string()),
+            preserve_metadata: Some(false),
+        };
+        let progress = Channel::<BatchProgressEvent>::new(|_| Ok(()));
+        let summary = convert_batch(vec![options], progress, CancellationToken::new()).unwrap();
+
+        assert_eq!(summary.total, 1);
+        assert_eq!(summary.completed, 0);
+        assert_eq!(summary.skipped, 1);
+        assert_eq!(summary.failed, 0);
+        assert!(!summary.cancelled);
+        assert_eq!(fs::read(output).unwrap(), b"old");
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn batch_progress_send_failure_aborts_batch() {
+        let progress = Channel::<BatchProgressEvent>::new(|_| {
+            Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "closed").into())
+        });
+        let err = convert_batch(Vec::new(), progress, CancellationToken::new()).unwrap_err();
+
+        assert!(err.contains("无法发送批量进度事件"));
     }
 }

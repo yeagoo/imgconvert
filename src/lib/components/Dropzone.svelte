@@ -8,6 +8,8 @@
   let previewMessage = $state("");
 
   async function pick() {
+    if (ui.converting) return;
+
     if (!isTauriRuntime()) {
       previewMessage = "网页预览无法读取本机文件路径,请在 Tauri 桌面端选择文件";
       return;
@@ -29,7 +31,7 @@
   <UploadSimple size={34} weight="duotone" class="mx-auto text-muted-foreground" />
   <p class="mt-2 text-sm font-medium">拖拽图片到这里</p>
   <p class="mb-3 text-xs text-muted-foreground">支持批量 · 或</p>
-  <Button variant="outline" size="sm" onclick={pick}>选择文件…</Button>
+  <Button variant="outline" size="sm" onclick={pick} disabled={ui.converting}>选择文件…</Button>
   {#if previewMessage}
     <p class="mt-3 text-xs text-muted-foreground">{previewMessage}</p>
   {/if}

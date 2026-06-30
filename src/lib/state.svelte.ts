@@ -270,6 +270,8 @@ export function fmtSize(b: number): string {
 
 // ---- 队列操作(就地变更,保持响应式)----
 export function addPaths(paths: string[]) {
+  if (ui.converting) return;
+
   const readable = readableExtensions();
   for (const p of paths) {
     if (!readable.includes(extOf(p))) continue;
@@ -305,6 +307,8 @@ export function addDemoItems() {
 }
 
 export function setItemTargetFormat(path: string, format: string | null) {
+  if (ui.converting) return;
+
   const item = queue.find((it) => it.path === path);
   if (!item) return;
   const normalized = format?.toLowerCase() ?? null;
@@ -318,6 +322,8 @@ export function setItemTargetFormat(path: string, format: string | null) {
 }
 
 export function resetItemFormats() {
+  if (ui.converting) return;
+
   for (const item of queue) {
     item.targetFormat = null;
     if (item.status !== "running") {
@@ -356,6 +362,7 @@ export async function convertAll() {
 
   ui.converting = true;
   ui.cancelRequested = false;
+  ui.dragActive = false;
   try {
     if (settings.overwrite === "ask") {
       await convertAllWithAskPolicy();

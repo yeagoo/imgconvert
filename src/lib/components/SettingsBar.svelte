@@ -17,6 +17,7 @@
     resetItemFormats,
     settings,
     supportsLossless,
+    ui,
   } from "$lib/state.svelte";
 
   let outputMessage = $state("");
@@ -54,6 +55,8 @@
   });
 
   async function pickOut() {
+    if (ui.converting) return;
+
     if (!isTauriRuntime()) {
       outputMessage = "网页预览不支持选择本机输出目录";
       return;
@@ -68,17 +71,23 @@
   }
 
   function clearOut() {
+    if (ui.converting) return;
+
     settings.outDir = null;
     outputMessage = "";
     persistSettings();
   }
 
   function setFormat(value: string) {
+    if (ui.converting) return;
+
     settings.format = value;
     persistSettings();
   }
 
   function setOverwrite(value: string) {
+    if (ui.converting) return;
+
     if (value === "ask" || value === "skip" || value === "overwrite") {
       settings.overwrite = value;
     }
@@ -86,6 +95,8 @@
   }
 
   function setTemplate(value: string) {
+    if (ui.converting) return;
+
     settings.fileNameTemplate = value;
     persistSettings();
   }
@@ -100,11 +111,12 @@
       bind:value={settings.format}
       {sourceFormats}
       onChange={setFormat}
+      disabled={ui.converting}
       triggerClass="w-full"
     />
   </div>
 
-  <div class="flex min-w-0 flex-col gap-2" class:opacity-40={!lossyEnabled}>
+  <div class="flex min-w-0 flex-col gap-2" class:opacity-40={!lossyEnabled || ui.converting}>
     <div class="flex items-center justify-between gap-3">
       <Label class="text-xs text-muted-foreground">质量</Label>
       <b class="tabular-nums text-sm text-foreground">{settings.quality}</b>
@@ -116,7 +128,7 @@
         min={1}
         max={100}
         step={1}
-        disabled={!lossyEnabled}
+        disabled={!lossyEnabled || ui.converting}
         onValueCommit={persistSettings}
       />
     </div>
@@ -124,8 +136,13 @@
 
   <div class="flex min-w-0 flex-col gap-1.5">
     <Label class="text-xs text-muted-foreground">已存在文件</Label>
-    <Select.Root type="single" bind:value={settings.overwrite} onValueChange={setOverwrite}>
-      <Select.Trigger class="w-full">{overwriteLabel}</Select.Trigger>
+    <Select.Root
+      type="single"
+      bind:value={settings.overwrite}
+      disabled={ui.converting}
+      onValueChange={setOverwrite}
+    >
+      <Select.Trigger class="w-full" disabled={ui.converting}>{overwriteLabel}</Select.Trigger>
       <Select.Content>
         <Select.Item value="ask" label="询问">询问</Select.Item>
         <Select.Item value="skip" label="跳过">跳过</Select.Item>
@@ -140,15 +157,16 @@
       value={settings.fileNameTemplate}
       class="h-8 rounded-md border bg-background px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
       placeholder="%name%"
+      disabled={ui.converting}
       oninput={(event) => setTemplate(event.currentTarget.value)}
     />
   </div>
 
   <div class="flex min-w-0 items-center gap-5 lg:col-span-2">
-    <div class="flex items-center gap-2" class:opacity-40={!canLossless}>
+    <div class="flex items-center gap-2" class:opacity-40={!canLossless || ui.converting}>
       <Switch
         bind:checked={settings.lossless}
-        disabled={!canLossless}
+        disabled={!canLossless || ui.converting}
         onCheckedChange={persistSettings}
       />
       <Label class="text-sm">无损压缩</Label>
@@ -165,14 +183,19 @@
   </div>
 
   <div class="flex items-center gap-2">
-    <Button variant="ghost" size="sm" onclick={resetItemFormats} disabled={!queue.length}>
+    <Button
+      variant="ghost"
+      size="sm"
+      onclick={resetItemFormats}
+      disabled={ui.converting || !queue.length}
+    >
       <ArrowsClockwise weight="duotone" />
       跟随全局格式
     </Button>
   </div>
 
   <div class="flex min-w-0 items-center gap-2">
-    <Button variant="ghost" size="sm" onclick={pickOut}>
+    <Button variant="ghost" size="sm" onclick={pickOut} disabled={ui.converting}>
       <FolderOpen weight="duotone" />
       输出目录
     </Button>
@@ -180,6 +203,7 @@
       class="max-w-[220px] truncate text-left text-xs text-muted-foreground hover:text-foreground"
       title={settings.outDir ?? "与原文件相同目录(点击清除自定义目录)"}
       onclick={clearOut}
+      disabled={ui.converting}
     >
       {settings.outDir ?? "与原文件相同目录"}
     </button>
