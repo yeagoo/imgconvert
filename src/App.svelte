@@ -152,7 +152,7 @@
       <ul
         class="grid min-h-0 flex-1 grid-cols-1 content-start gap-3 overflow-y-auto md:grid-cols-2 xl:grid-cols-3"
       >
-        {#each queue as item (item.path)}
+        {#each queue as item (item.key)}
           <QueueItem {item} />
         {:else}
           <li class="col-span-full flex h-full min-h-48 items-center justify-center rounded-lg border border-dashed p-8 text-sm text-muted-foreground">

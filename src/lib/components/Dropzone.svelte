@@ -1,11 +1,21 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 <script lang="ts">
   import { open } from "@tauri-apps/plugin-dialog";
-  import { FolderOpen, Images, UploadSimple } from "phosphor-svelte";
+  import { FolderOpen, Images, StopCircle, UploadSimple } from "phosphor-svelte";
   import { Button } from "$lib/components/ui/button";
-  import { importPaths, isTauriRuntime, ui, readableExtensions } from "$lib/state.svelte";
+  import {
+    cancelImportScan,
+    importPaths,
+    isTauriRuntime,
+    ui,
+    readableExtensions,
+  } from "$lib/state.svelte";
 
   const busy = $derived(ui.converting || ui.importing);
+  const importErrorPreview = $derived(ui.importErrors.slice(0, 5));
+  const hiddenImportErrors = $derived(
+    Math.max(0, ui.importErrors.length - importErrorPreview.length),
+  );
 
   async function pickFiles() {
     if (busy) return;
@@ -60,8 +70,37 @@
       <FolderOpen weight="duotone" />
       选择文件夹
     </Button>
+    {#if ui.importing}
+      <Button
+        variant="ghost"
+        size="sm"
+        onclick={cancelImportScan}
+        disabled={ui.importCancelRequested}
+      >
+        <StopCircle weight="duotone" />
+        {ui.importCancelRequested ? "取消中" : "取消扫描"}
+      </Button>
+    {/if}
   </div>
   {#if ui.importMessage}
     <p class="mt-3 text-xs text-muted-foreground">{ui.importMessage}</p>
+  {/if}
+  {#if ui.importErrors.length}
+    <details class="mx-auto mt-3 max-w-3xl text-left text-xs text-muted-foreground">
+      <summary class="cursor-pointer text-center hover:text-foreground">
+        查看导入错误
+      </summary>
+      <ul class="mt-2 space-y-1 rounded-md border bg-background p-2">
+        {#each importErrorPreview as error}
+          <li class="min-w-0">
+            <span class="font-medium text-foreground">{error.message}</span>
+            <span class="block truncate" title={error.path}>{error.path}</span>
+          </li>
+        {/each}
+        {#if hiddenImportErrors}
+          <li>还有 {hiddenImportErrors} 个错误未显示</li>
+        {/if}
+      </ul>
+    </details>
   {/if}
 </section>

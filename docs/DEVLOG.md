@@ -9,16 +9,17 @@
 
 Codex 完成 P1「拖拽/文件夹导入」的第一版可运行闭环:
 
-- **Rust 导入扫描命令**:新增 `scan_import_paths(options)`。前端传入用户显式选择/拖拽的文件或目录,后端用 `std::fs` 递归扫描目录,按 `capabilities().readable` 对应扩展名过滤,并以规范化路径去重。扫描结果返回 `ImportScanResult { files, skipped, errors }`,权限/缺失路径等错误按条目记录,不让单个坏路径中断整批导入。
+- **Rust 导入扫描命令**:新增 `scan_import_paths(options)`。前端传入用户显式选择/拖拽的文件或目录,后端用 `std::fs` 显式栈扫描目录,由 core 可读格式自行派生扩展名过滤,并以规范化路径去重。扫描结果返回 `ImportScanResult { files: [{ path, key }], skipped, errors, truncated, cancelled, limitReason }`,权限/缺失路径等错误按条目记录,不让单个坏路径中断整批导入。
+- **扫描防护与取消**:扫描默认限制为 20k 文件、100k 路径条目、64 层深度(后端硬上限继续兜底);超过限制会返回截断原因。新增 `cancel_import_scan()` + `ImportScanState`,前端导入中可取消扫描,取消结果不把半批文件塞入队列。
 - **符号链接边界**:普通符号链接文件可作为文件导入;符号链接目录不递归,避免目录循环和越过用户明确授权边界。
-- **前端统一入口**:`Dropzone` 增加「选择文件夹」,文件选择、文件夹选择、Tauri 原生拖拽都统一调用 `importPaths()`,并显示已添加/重复/跳过/错误数量。导入扫描期间禁止清空、移除、转换和设置改动,避免队列竞态。
+- **前端统一入口**:`Dropzone` 增加「选择文件夹」,文件选择、文件夹选择、Tauri 原生拖拽都统一调用 `importPaths()`,并显示已添加/重复/跳过/错误数量。队列使用后端返回的 canonical `key` 跨批次去重;导入错误可展开查看前几条明细。导入扫描期间禁止清空、移除、转换和设置改动,避免队列竞态。
 
 验证:
 
 - `pnpm run check`:通过(0 errors / 0 warnings)。
 - `pnpm run build`:通过。
 - `pnpm run license:check`:通过,未发现 GPL/AGPL/LGPL,第三方许可生成物保持最新。
-- `cargo +1.96.0 test --manifest-path src-tauri/Cargo.toml`:通过(12 tests)。
+- `cargo +1.96.0 test --manifest-path src-tauri/Cargo.toml`:通过(16 tests)。
 - `cargo +1.96.0 clippy --manifest-path src-tauri/Cargo.toml -- -D warnings`:通过。
 - `cargo test -p imgconvert-core`:通过(12 tests)。
 - `cargo clippy -p imgconvert-core -- -D warnings`:通过。

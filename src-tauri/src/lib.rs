@@ -7,7 +7,7 @@ mod import;
 use convert::{
     BatchProgressEvent, BatchState, BatchSummary, Capabilities, ConvertOptions, ConvertResult,
 };
-use import::{ImportScanResult, ScanImportOptions};
+use import::{ImportScanResult, ImportScanState, ScanImportOptions};
 use tauri::ipc::Channel;
 use tauri::State;
 
@@ -56,16 +56,34 @@ fn cancel_batch(state: State<'_, BatchState>) -> bool {
 
 /// 扫描用户显式授权的文件/目录路径,递归过滤出可读图片文件。
 #[tauri::command]
-async fn scan_import_paths(options: ScanImportOptions) -> Result<ImportScanResult, String> {
-    tauri::async_runtime::spawn_blocking(move || import::scan_import_paths(options))
-        .await
-        .map_err(|e| format!("导入扫描任务调度失败: {e}"))
+async fn scan_import_paths(
+    options: ScanImportOptions,
+    state: State<'_, ImportScanState>,
+) -> Result<ImportScanResult, String> {
+    let scan = state.begin()?;
+    let scan_id = scan.id();
+    let cancel = scan.token();
+
+    let result =
+        tauri::async_runtime::spawn_blocking(move || import::scan_import_paths(options, cancel))
+            .await
+            .map_err(|e| format!("导入扫描任务调度失败: {e}"));
+
+    state.finish(scan_id);
+    result
+}
+
+/// 请求取消当前导入扫描。返回值表示是否找到正在运行的扫描并发出取消信号。
+#[tauri::command]
+fn cancel_import_scan(state: State<'_, ImportScanState>) -> bool {
+    state.cancel_current()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .manage(BatchState::default())
+        .manage(ImportScanState::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::new().build())
@@ -74,7 +92,8 @@ pub fn run() {
             convert_image,
             convert_batch,
             cancel_batch,
-            scan_import_paths
+            scan_import_paths,
+            cancel_import_scan
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
