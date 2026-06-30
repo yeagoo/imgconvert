@@ -6,7 +6,7 @@
 //! 图片编解码由 `imgconvert-core` 进程内完成；这里只负责路径解析、文件读写、
 //! 覆盖策略和前端能力矩阵。
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -465,15 +465,34 @@ pub fn convert_batch(
         )?;
         return Ok(summary);
     }
+    if cancel.is_cancelled() {
+        summary.cancelled = true;
+        send_cancelled_progress(&progress, &summary)?;
+        send_progress(
+            &progress,
+            BatchProgressEvent::Finished {
+                summary: summary.clone(),
+            },
+        )?;
+        return Ok(summary);
+    }
 
     let worker_count = resolve_batch_concurrency(concurrency, total);
-    let queue = Arc::new(Mutex::new(
-        options
-            .into_iter()
-            .enumerate()
-            .map(|(index, options)| IndexedConvertOptions { index, options })
-            .collect::<VecDeque<_>>(),
-    ));
+    let (jobs, preflight_events) = prepare_batch_work(options);
+    for event in preflight_events {
+        apply_batch_event(&progress, &mut summary, event)?;
+    }
+    if jobs.is_empty() {
+        send_progress(
+            &progress,
+            BatchProgressEvent::Finished {
+                summary: summary.clone(),
+            },
+        )?;
+        return Ok(summary);
+    }
+
+    let queue = Arc::new(Mutex::new(jobs));
     let (tx, rx) = mpsc::channel::<BatchProgressEvent>();
     let coordinator_cancel = cancel.clone();
 
@@ -507,13 +526,7 @@ pub fn convert_batch(
 
     if cancel.is_cancelled() {
         summary.cancelled = true;
-        send_progress(
-            &progress,
-            BatchProgressEvent::Cancelled {
-                completed: summary.completed,
-                total,
-            },
-        )?;
+        send_cancelled_progress(&progress, &summary)?;
     }
 
     send_progress(
@@ -523,6 +536,50 @@ pub fn convert_batch(
         },
     )?;
     Ok(summary)
+}
+
+fn prepare_batch_work(
+    options: Vec<ConvertOptions>,
+) -> (VecDeque<IndexedConvertOptions>, Vec<BatchProgressEvent>) {
+    let mut jobs = VecDeque::new();
+    let mut preflight_events = Vec::new();
+    let mut output_paths = HashSet::new();
+
+    for (index, options) in options.into_iter().enumerate() {
+        match output_path(&options) {
+            Ok(output) => {
+                let key = output_conflict_key(&output);
+                if !output_paths.insert(key) {
+                    preflight_events.push(BatchProgressEvent::FileError {
+                        index,
+                        input: options.input,
+                        message: format!("输出路径在本批次内重复: {}", output.display()),
+                    });
+                    continue;
+                }
+            }
+            Err(_) => {
+                // Let convert() report the exact validation error through the normal file path.
+            }
+        }
+
+        jobs.push_back(IndexedConvertOptions { index, options });
+    }
+
+    (jobs, preflight_events)
+}
+
+fn output_conflict_key(output: &Path) -> PathBuf {
+    let Some(parent) = output.parent() else {
+        return output.to_path_buf();
+    };
+    let Some(file_name) = output.file_name() else {
+        return output.to_path_buf();
+    };
+    match fs::canonicalize(parent) {
+        Ok(parent) => parent.join(file_name),
+        Err(_) => output.to_path_buf(),
+    }
 }
 
 fn batch_worker_loop(
@@ -665,6 +722,19 @@ fn send_progress(
     progress
         .send(event)
         .map_err(|e| format!("无法发送批量进度事件: {e}"))
+}
+
+fn send_cancelled_progress(
+    progress: &Channel<BatchProgressEvent>,
+    summary: &BatchSummary,
+) -> Result<(), String> {
+    send_progress(
+        progress,
+        BatchProgressEvent::Cancelled {
+            completed: summary.completed,
+            total: summary.total,
+        },
+    )
 }
 
 fn should_count_as_skipped(opts: &ConvertOptions, message: &str) -> bool {
@@ -872,6 +942,46 @@ mod tests {
         assert_eq!(summary.failed, 0);
         assert!(out_dir.join("sample-a.jpg").exists());
         assert!(out_dir.join("sample-b.jpg").exists());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn batch_rejects_duplicate_output_paths_before_parallel_work() {
+        let dir = unique_test_dir("batch-duplicate-output");
+        let source_a = dir.join("a");
+        let source_b = dir.join("b");
+        let out_dir = dir.join("out");
+        fs::create_dir_all(&source_a).unwrap();
+        fs::create_dir_all(&source_b).unwrap();
+        let input_a = source_a.join("sample.png");
+        let input_b = source_b.join("sample.png");
+        fs::write(&input_a, one_by_one_png()).unwrap();
+        fs::write(&input_b, one_by_one_png()).unwrap();
+
+        let options = [input_a.clone(), input_b.clone()]
+            .into_iter()
+            .map(|input| ConvertOptions {
+                input: input.to_string_lossy().to_string(),
+                out_dir: Some(out_dir.to_string_lossy().to_string()),
+                format: "jpeg".to_string(),
+                quality: 80,
+                lossless: false,
+                overwrite: true,
+                overwrite_mode: Some("overwrite".to_string()),
+                file_name_template: Some("%name%".to_string()),
+                preserve_metadata: Some(false),
+            })
+            .collect();
+        let progress = Channel::<BatchProgressEvent>::new(|_| Ok(()));
+        let summary = convert_batch(options, progress, CancellationToken::new(), Some(2)).unwrap();
+
+        assert_eq!(summary.total, 2);
+        assert_eq!(summary.completed, 1);
+        assert_eq!(summary.skipped, 0);
+        assert_eq!(summary.failed, 1);
+        assert!(!summary.cancelled);
+        assert!(out_dir.join("sample.jpg").exists());
 
         fs::remove_dir_all(dir).unwrap();
     }
