@@ -1,6 +1,6 @@
 # 开发路线图
 
-> 📍 **当前进度(2026-06-30)**:P0.5 引擎尖刺已通(`imgconvert-core` 跑通 JPEG/PNG/WebP/AVIF,测试全绿)→ **P0「前端整顿」三项已落地**(组件化架构 + core 能力契约 + shadcn 控件/格式选择器)→ **P0.5 批量进度/取消协议与许可闭环已落地** → **P1 文件导入层、并发批量、导入元数据 ping、异步缩略图、ask 覆盖批量协议与目录/时间戳可靠性最小闭环已落地**(拖拽/选择文件/选择文件夹统一走 Rust 扫描、过滤、去重;ask/skip/overwrite 批量转换均走 Channel;导入时展示尺寸/常见 DPI;队列卡片懒加载缩略图;输出保留相对目录与源 mtime)。下一步进入 P1 剩余文件可靠性细节。详见 [DEVLOG.md](DEVLOG.md)。
+> 📍 **当前进度(2026-06-30)**:P0.5 引擎尖刺已通(`imgconvert-core` 跑通 JPEG/PNG/WebP/AVIF,测试全绿)→ **P0「前端整顿」三项已落地**(组件化架构 + core 能力契约 + shadcn 控件/格式选择器)→ **P0.5 批量进度/取消协议与许可闭环已落地** → **P1 文件导入层、并发批量、导入元数据 ping、异步缩略图、ask 覆盖批量协议与文件可靠性最小闭环已落地**(拖拽/选择文件/选择文件夹统一走 Rust 扫描、过滤、去重;ask/skip/overwrite 批量转换均走 Channel;导入时展示尺寸/常见 DPI;队列卡片懒加载缩略图;输出保留相对目录与源 mtime;EXIF orientation 真旋正;大图按内存预算降并发;写失败提示半成品清理结果)。下一步进入 P1 剪贴板导入或 P2 保真/压缩设计。详见 [DEVLOG.md](DEVLOG.md)。
 
 > 原则:**UI/UX 优先**——先把界面与交互做出来「看得见」,再逐步接真实功能与高级压缩。
 > 参考依据见 [REFERENCES.md](REFERENCES.md),引擎/打包设计见 [ENGINE.md](ENGINE.md)。
@@ -94,16 +94,17 @@
 - [ ] 剪贴板粘贴导入
 - [x] 递归目录扫描 + 扩展名过滤 + 去重 + 扫描上限/取消(改写自 DropWebP)
 - [x] **Rust 端并发批量最小闭环**(全局任务队列 + worker 上限)——已替换 skip/overwrite 路径的串行批量。
-  - 外层全局并发上限(默认 `(available_parallelism-1).clamp(1,8)`)+ 用户可调并发已落地;**内存预算 / 大图场景降并发仍待做**。
+  - 外层全局并发上限(默认 `(available_parallelism-1).clamp(1,8)`)+ 用户可调并发已落地;大图场景按导入尺寸提示做内存预算降并发。
   - 进程内无子进程,不存在 vips「多进程×多线程」过度并发问题,但 `libavif`(rav1e)/`oxipng` 本身吃内存且内部多线程(设 maxThreads=1),仍需控流。
 - [x] **进度/取消统一走 Tauri Channel**(有序、低延迟、按调用作用域;`{index, percent, stage, status}`)。取消 = `CancellationToken`(见 ENGINE.md §7)。ask 覆盖策略已通过 `plan_conversions` 前置确认,实际转换统一走 batch Channel。
 - [x] 批处理三态(成功/跳过/错误)+ 单张失败不中断 + 末尾汇总
 - [x] **格式选择器由 core 支持矩阵驱动**(core 暴露可读/可写格式),别硬编码
 - [x] 导入 ping 尺寸/DPI(当前尺寸 + PNG `pHYs`/JPEG JFIF DPI;失败不阻断导入)
 - [x] 异步生成缩略图(视口懒加载 + 并发 2 + Blob URL 生命周期清理)
-- [x] **原子写 + 保留时间戳 + 保留目录结构**(原子临时文件写入已落地;目录导入保留相对目录;输出 best-effort 保留源 mtime)
+- [x] **原子写 + 保留时间戳 + 保留目录结构**(原子临时文件写入已落地;目录导入保留相对目录;输出 best-effort 保留源 mtime;写失败会提示并清理半成品)
 - [ ] HEIC:⚠️ **v1(Linux)不含 HEIC**(Codex:此处与 Linux-first 冲突已修正);macOS/Windows 的系统原生 HEIC 是**后续平台阶段**任务(见 P3 + ENGINE.md §3)
-- [ ] **文件可靠性**:失败清理半成品;同名冲突策略;**EXIF orientation 真旋正**;ICC/元数据保留或显式剥离(见 ENGINE.md §5);超大图内存上限;符号链接/权限错误友好处理;传参**传路径不传字节**。
+- [x] **文件可靠性最小闭环**:失败清理半成品;同名冲突策略;**EXIF orientation 真旋正**;超大图内存预算/降并发;符号链接/权限错误友好处理;传参**传路径不传字节**。
+- [ ] **ICC/EXIF 元数据保真**:完整透传或容器级显式剥离审计(见 ENGINE.md §5),放入 P2 保真阶段。
 
 ---
 

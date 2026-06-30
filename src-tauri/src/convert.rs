@@ -24,6 +24,9 @@ use tokio_util::sync::CancellationToken;
 
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 const MAX_BATCH_CONCURRENCY: usize = 8;
+const BATCH_MEMORY_BUDGET_BYTES: u64 = 768 * 1024 * 1024;
+const UNKNOWN_JOB_MEMORY_BYTES: u64 = 128 * 1024 * 1024;
+const RGBA_WORKING_SET_MULTIPLIER: u64 = 3;
 
 enum WriteMode {
     Replace,
@@ -56,6 +59,12 @@ pub struct ConvertOptions {
     pub out_dir: Option<String>,
     /// 从导入目录根到输入文件父目录的相对目录,用于保留目录结构。
     pub relative_dir: Option<String>,
+    /// 导入阶段探测到的源图宽度;仅作为批量内存预算提示,core 仍会自行校验真实尺寸。
+    #[serde(default)]
+    pub source_width: Option<u32>,
+    /// 导入阶段探测到的源图高度;仅作为批量内存预算提示,core 仍会自行校验真实尺寸。
+    #[serde(default)]
+    pub source_height: Option<u32>,
     /// 目标格式:avif | webp | jpeg | png。
     pub format: String,
     /// 质量 1-100(有损时生效)。
@@ -388,7 +397,7 @@ fn temp_file(out: &Path) -> Result<(PathBuf, File), String> {
         match OpenOptions::new().write(true).create_new(true).open(&tmp) {
             Ok(file) => return Ok((tmp, file)),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(format!("无法创建临时文件: {e}")),
+            Err(e) => return Err(format!("无法创建临时文件 {}: {e}", tmp.display())),
         }
     }
 
@@ -397,7 +406,8 @@ fn temp_file(out: &Path) -> Result<(PathBuf, File), String> {
 
 fn write_output(out: &Path, bytes: &[u8], mode: WriteMode) -> Result<(), String> {
     if let Some(parent) = out.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("无法创建输出目录: {e}"))?;
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("无法创建输出目录 {}: {e}", parent.display()))?;
     }
 
     match mode {
@@ -410,8 +420,8 @@ fn write_temp_output(out: &Path, bytes: &[u8]) -> Result<PathBuf, String> {
     let (tmp, mut tmp_file) = temp_file(out)?;
     if let Err(e) = tmp_file.write_all(bytes).and_then(|_| tmp_file.flush()) {
         drop(tmp_file);
-        let _ = fs::remove_file(&tmp);
-        return Err(format!("无法写入临时文件: {e}"));
+        let cleanup = cleanup_partial_note(&tmp);
+        return Err(format!("无法写入临时文件 {}: {e}{cleanup}", tmp.display()));
     }
     drop(tmp_file);
     Ok(tmp)
@@ -424,18 +434,24 @@ fn replace_output(out: &Path, bytes: &[u8]) -> Result<(), String> {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && out.exists() => {
             if let Err(remove_error) = fs::remove_file(out) {
-                let _ = fs::remove_file(&tmp);
-                return Err(format!("无法替换已存在的输出文件: {remove_error}"));
+                let cleanup = cleanup_partial_note(&tmp);
+                return Err(format!(
+                    "无法替换已存在的输出文件 {}: {remove_error}{cleanup}",
+                    out.display()
+                ));
             }
             if let Err(rename_error) = fs::rename(&tmp, out) {
-                let _ = fs::remove_file(&tmp);
-                return Err(format!("无法写入输出文件: {rename_error}"));
+                let cleanup = cleanup_partial_note(&tmp);
+                return Err(format!(
+                    "无法写入输出文件 {}: {rename_error}{cleanup}",
+                    out.display()
+                ));
             }
             Ok(())
         }
         Err(e) => {
-            let _ = fs::remove_file(&tmp);
-            Err(format!("无法写入输出文件: {e}"))
+            let cleanup = cleanup_partial_note(&tmp);
+            Err(format!("无法写入输出文件 {}: {e}{cleanup}", out.display()))
         }
     }
 }
@@ -449,30 +465,45 @@ fn write_new_output(out: &Path, bytes: &[u8]) -> Result<(), String> {
             if e.kind() == std::io::ErrorKind::AlreadyExists {
                 format!("输出已存在(未开启覆盖): {}", out.display())
             } else {
-                format!("无法创建输出文件: {e}")
+                format!("无法创建输出文件 {}: {e}", out.display())
             }
         })?;
 
     if let Err(e) = file.write_all(bytes).and_then(|_| file.flush()) {
         drop(file);
-        let _ = fs::remove_file(out);
-        return Err(format!("无法写入输出文件: {e}"));
+        let cleanup = cleanup_partial_note(out);
+        return Err(format!("无法写入输出文件 {}: {e}{cleanup}", out.display()));
     }
 
     Ok(())
 }
 
+fn cleanup_partial_note(path: &Path) -> String {
+    match fs::remove_file(path) {
+        Ok(()) => format!("; 已清理半成品 {}", path.display()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            format!("; 半成品已不存在 {}", path.display())
+        }
+        Err(e) => format!("; 尝试清理半成品 {} 失败: {e}", path.display()),
+    }
+}
+
 /// 执行一次转换。
 pub fn convert(opts: &ConvertOptions) -> Result<ConvertResult, String> {
     let input = Path::new(&opts.input);
-    if !input.exists() {
-        return Err(format!("输入文件不存在: {}", opts.input));
+    let input_metadata = fs::metadata(input).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            format!("输入文件不存在: {}", input.display())
+        } else {
+            format!("无法访问输入文件 {}: {e}", input.display())
+        }
+    })?;
+    if !input_metadata.is_file() {
+        return Err(format!("输入路径不是文件: {}", input.display()));
     }
 
     let out = output_path(opts)?;
-    let source_modified = fs::metadata(input)
-        .and_then(|metadata| metadata.modified())
-        .ok();
+    let source_modified = input_metadata.modified().ok();
     let overwrite_mode = match opts.overwrite_mode.as_deref() {
         Some(mode @ ("ask" | "skip" | "overwrite")) => mode,
         Some(other) => return Err(format!("不支持的覆盖策略: {other}")),
@@ -490,7 +521,8 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertResult, String> {
     if opts.preserve_metadata.unwrap_or(false) {
         return Err("保留元数据尚未实现".to_string());
     }
-    let source = fs::read(input).map_err(|e| format!("无法读取输入文件: {e}"))?;
+    let source =
+        fs::read(input).map_err(|e| format!("无法读取输入文件 {}: {e}", input.display()))?;
     let encoded = imgconvert_core::convert(
         &source,
         target,
@@ -511,7 +543,7 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertResult, String> {
         let _ = set_modified_time(&out, modified);
     }
 
-    let in_size = fs::metadata(input).map(|m| m.len()).unwrap_or(0);
+    let in_size = input_metadata.len();
     let out_size = fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
 
     Ok(ConvertResult {
@@ -568,7 +600,6 @@ pub fn convert_batch(
         return Ok(summary);
     }
 
-    let worker_count = resolve_batch_concurrency(concurrency, total);
     let (jobs, preflight_events) = prepare_batch_work(options);
     for event in preflight_events {
         apply_batch_event(&progress, &mut summary, event)?;
@@ -582,6 +613,10 @@ pub fn convert_batch(
         )?;
         return Ok(summary);
     }
+    let worker_count = apply_memory_budget(
+        resolve_batch_concurrency(concurrency, jobs.len()),
+        jobs.iter(),
+    );
 
     let queue = Arc::new(Mutex::new(jobs));
     let (tx, rx) = mpsc::channel::<BatchProgressEvent>();
@@ -806,6 +841,52 @@ fn default_batch_concurrency() -> usize {
         .clamp(1, MAX_BATCH_CONCURRENCY)
 }
 
+fn apply_memory_budget<'a>(
+    base: usize,
+    options: impl IntoIterator<Item = &'a IndexedConvertOptions>,
+) -> usize {
+    if base <= 1 {
+        return base;
+    }
+
+    let mut estimates = options
+        .into_iter()
+        .map(|job| estimated_job_memory_bytes(&job.options))
+        .collect::<Vec<_>>();
+    if estimates.is_empty() {
+        return base;
+    }
+    estimates.sort_unstable_by(|a, b| b.cmp(a));
+
+    for candidate in (1..=base).rev() {
+        let worst_case = estimates
+            .iter()
+            .take(candidate)
+            .fold(0u128, |acc, value| acc + *value as u128);
+        if worst_case <= BATCH_MEMORY_BUDGET_BYTES as u128 {
+            return candidate;
+        }
+    }
+    1
+}
+
+fn estimated_job_memory_bytes(options: &ConvertOptions) -> u64 {
+    estimate_from_dimensions(options.source_width, options.source_height)
+        .unwrap_or(UNKNOWN_JOB_MEMORY_BYTES)
+}
+
+fn estimate_from_dimensions(width: Option<u32>, height: Option<u32>) -> Option<u64> {
+    let width = width?;
+    let height = height?;
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let pixels = u64::from(width).checked_mul(u64::from(height))?;
+    pixels
+        .checked_mul(4)?
+        .checked_mul(RGBA_WORKING_SET_MULTIPLIER)
+}
+
 fn send_progress(
     progress: &Channel<BatchProgressEvent>,
     event: BatchProgressEvent,
@@ -904,6 +985,23 @@ mod tests {
         png
     }
 
+    fn test_convert_options(input: String) -> ConvertOptions {
+        ConvertOptions {
+            input,
+            out_dir: None,
+            relative_dir: None,
+            source_width: None,
+            source_height: None,
+            format: "jpeg".to_string(),
+            quality: 80,
+            lossless: false,
+            overwrite: false,
+            overwrite_mode: Some("skip".to_string()),
+            file_name_template: Some("%name%".to_string()),
+            preserve_metadata: Some(false),
+        }
+    }
+
     #[test]
     fn write_output_create_new_does_not_clobber_existing_file() {
         let dir = unique_test_dir("create-new");
@@ -914,6 +1012,53 @@ mod tests {
         let err = write_output(&out, b"new", WriteMode::CreateNew).unwrap_err();
         assert!(err.contains("输出已存在"));
         assert_eq!(fs::read(&out).unwrap(), b"old");
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn write_output_error_includes_blocked_parent_path() {
+        let dir = unique_test_dir("blocked-parent");
+        fs::create_dir_all(&dir).unwrap();
+        let blocked = dir.join("blocked");
+        fs::write(&blocked, b"file").unwrap();
+        let out = blocked.join("out.bin");
+
+        let err = write_output(&out, b"new", WriteMode::CreateNew).unwrap_err();
+
+        assert!(err.contains("无法创建输出目录"));
+        assert!(err.contains(&blocked.to_string_lossy().to_string()));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn cleanup_partial_note_removes_partial_file() {
+        let dir = unique_test_dir("cleanup-partial");
+        fs::create_dir_all(&dir).unwrap();
+        let partial = dir.join(".imgconvert-test.tmp");
+        fs::write(&partial, b"partial").unwrap();
+
+        let note = cleanup_partial_note(&partial);
+
+        assert!(note.contains("已清理半成品"));
+        assert!(!partial.exists());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn convert_rejects_directory_input_with_specific_message() {
+        let dir = unique_test_dir("directory-input");
+        let input_dir = dir.join("input-dir");
+        fs::create_dir_all(&input_dir).unwrap();
+        let mut options = test_convert_options(input_dir.to_string_lossy().to_string());
+        options.out_dir = Some(dir.join("out").to_string_lossy().to_string());
+
+        let err = convert(&options).unwrap_err();
+
+        assert!(err.contains("输入路径不是文件"));
+        assert!(err.contains(&input_dir.to_string_lossy().to_string()));
 
         fs::remove_dir_all(dir).unwrap();
     }
@@ -980,6 +1125,8 @@ mod tests {
             input: input.to_string_lossy().to_string(),
             out_dir: Some(out_dir.to_string_lossy().to_string()),
             relative_dir: None,
+            source_width: None,
+            source_height: None,
             format: "jpeg".to_string(),
             quality: 80,
             lossless: false,
@@ -1015,6 +1162,8 @@ mod tests {
             input: input.to_string_lossy().to_string(),
             out_dir: Some(out_dir.to_string_lossy().to_string()),
             relative_dir: None,
+            source_width: None,
+            source_height: None,
             format: "jpeg".to_string(),
             quality: 80,
             lossless: false,
@@ -1050,6 +1199,8 @@ mod tests {
             input: input.to_string_lossy().to_string(),
             out_dir: Some(out_dir.to_string_lossy().to_string()),
             relative_dir: Some("album/day-1".to_string()),
+            source_width: None,
+            source_height: None,
             format: "jpeg".to_string(),
             quality: 80,
             lossless: false,
@@ -1075,6 +1226,8 @@ mod tests {
             input: "photo.png".to_string(),
             out_dir: Some("out".to_string()),
             relative_dir: Some("../escape".to_string()),
+            source_width: None,
+            source_height: None,
             format: "jpeg".to_string(),
             quality: 80,
             lossless: false,
@@ -1105,6 +1258,8 @@ mod tests {
                 input: input.to_string_lossy().to_string(),
                 out_dir: Some(out_dir.to_string_lossy().to_string()),
                 relative_dir: None,
+                source_width: None,
+                source_height: None,
                 format: "jpeg".to_string(),
                 quality: 80,
                 lossless: false,
@@ -1146,6 +1301,8 @@ mod tests {
                 input: input.to_string_lossy().to_string(),
                 out_dir: Some(out_dir.to_string_lossy().to_string()),
                 relative_dir: None,
+                source_width: None,
+                source_height: None,
                 format: "jpeg".to_string(),
                 quality: 80,
                 lossless: false,
@@ -1182,6 +1339,8 @@ mod tests {
             input: input.to_string_lossy().to_string(),
             out_dir: Some(out_dir.to_string_lossy().to_string()),
             relative_dir: Some("nested".to_string()),
+            source_width: None,
+            source_height: None,
             format: "jpeg".to_string(),
             quality: 80,
             lossless: false,
@@ -1216,6 +1375,34 @@ mod tests {
     }
 
     #[test]
+    fn memory_budget_reduces_parallelism_for_large_sources() {
+        let jobs = (0..4)
+            .map(|index| {
+                let mut options = test_convert_options(format!("sample-{index}.png"));
+                options.source_width = Some(6000);
+                options.source_height = Some(4000);
+                IndexedConvertOptions { index, options }
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(apply_memory_budget(4, jobs.iter()), 2);
+    }
+
+    #[test]
+    fn memory_budget_forces_single_worker_for_oversized_sources() {
+        let jobs = (0..2)
+            .map(|index| {
+                let mut options = test_convert_options(format!("huge-{index}.png"));
+                options.source_width = Some(12_000);
+                options.source_height = Some(8000);
+                IndexedConvertOptions { index, options }
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(apply_memory_budget(2, jobs.iter()), 1);
+    }
+
+    #[test]
     fn batch_cancelled_before_first_file_reports_cancelled() {
         let dir = unique_test_dir("batch-cancel");
         let out_dir = dir.join("out");
@@ -1227,6 +1414,8 @@ mod tests {
             input: input.to_string_lossy().to_string(),
             out_dir: Some(out_dir.to_string_lossy().to_string()),
             relative_dir: None,
+            source_width: None,
+            source_height: None,
             format: "jpeg".to_string(),
             quality: 80,
             lossless: false,
@@ -1264,6 +1453,8 @@ mod tests {
             input: input.to_string_lossy().to_string(),
             out_dir: Some(out_dir.to_string_lossy().to_string()),
             relative_dir: None,
+            source_width: None,
+            source_height: None,
             format: "jpeg".to_string(),
             quality: 80,
             lossless: false,

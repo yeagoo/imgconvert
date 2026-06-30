@@ -13,6 +13,8 @@ use std::fmt;
 use std::io::Cursor;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
+use image::ImageDecoder;
+
 /// 像素数上限(防超大分配 / C 层 OOM;~100MP,可后续配置)。
 pub const MAX_PIXELS: usize = 100_000_000;
 
@@ -405,6 +407,8 @@ fn probe_jpeg(bytes: &[u8]) -> Result<(u32, u32, Option<Dpi>)> {
 
     let mut offset = 2usize;
     let mut dpi = None;
+    let mut dimensions = None;
+    let mut orientation = image::metadata::Orientation::NoTransforms;
     while offset < bytes.len() {
         while offset < bytes.len() && bytes[offset] != 0xff {
             offset += 1;
@@ -447,6 +451,11 @@ fn probe_jpeg(bytes: &[u8]) -> Result<(u32, u32, Option<Dpi>)> {
         if marker == 0xe0 && dpi.is_none() {
             dpi = parse_jfif_dpi(data);
         }
+        if marker == 0xe1 && data.len() > 6 && &data[0..6] == b"Exif\0\0" {
+            if let Some(value) = image::metadata::Orientation::from_exif_chunk(&data[6..]) {
+                orientation = value;
+            }
+        }
         if is_jpeg_sof(marker) {
             if data.len() < 5 {
                 return Err(Error::Decode("JPEG SOF 数据不完整".into()));
@@ -454,13 +463,17 @@ fn probe_jpeg(bytes: &[u8]) -> Result<(u32, u32, Option<Dpi>)> {
             let height =
                 be_u16(&data[1..3]).ok_or_else(|| Error::Decode("JPEG 高度缺失".into()))?;
             let width = be_u16(&data[3..5]).ok_or_else(|| Error::Decode("JPEG 宽度缺失".into()))?;
-            return Ok((width as u32, height as u32, dpi));
+            dimensions = Some((width as u32, height as u32));
         }
 
         offset = data_end;
     }
 
-    Err(Error::Decode("无法读取 JPEG 尺寸".into()))
+    let Some((width, height)) = dimensions else {
+        return Err(Error::Decode("无法读取 JPEG 尺寸".into()));
+    };
+    let (width, height) = oriented_dimensions(width, height, orientation);
+    Ok((width, height, dpi))
 }
 
 fn parse_jfif_dpi(data: &[u8]) -> Option<Dpi> {
@@ -543,9 +556,31 @@ fn decode_via_image(bytes: &[u8], format: image::ImageFormat) -> Result<ImageDat
     decode_limits.max_alloc = Some(expected_rgba_len as u64);
     let mut reader = image::ImageReader::with_format(Cursor::new(bytes), format);
     reader.limits(decode_limits);
-    let img = reader.decode().map_err(|e| Error::Decode(e.to_string()))?;
+    let mut decoder = reader
+        .into_decoder()
+        .map_err(|e| Error::Decode(e.to_string()))?;
+    let orientation = decoder
+        .orientation()
+        .map_err(|e| Error::Decode(e.to_string()))?;
+    let mut img =
+        image::DynamicImage::from_decoder(decoder).map_err(|e| Error::Decode(e.to_string()))?;
+    img.apply_orientation(orientation);
     let rgba = img.to_rgba8();
     ImageData::new(rgba.width(), rgba.height(), rgba.into_raw())
+}
+
+fn oriented_dimensions(
+    width: u32,
+    height: u32,
+    orientation: image::metadata::Orientation,
+) -> (u32, u32) {
+    match orientation {
+        image::metadata::Orientation::Rotate90
+        | image::metadata::Orientation::Rotate270
+        | image::metadata::Orientation::Rotate90FlipH
+        | image::metadata::Orientation::Rotate270FlipH => (height, width),
+        _ => (width, height),
+    }
 }
 
 // ---------- JPEG ----------
@@ -820,6 +855,64 @@ mod tests {
         ImageData::new(width, height, rgba).unwrap()
     }
 
+    fn quadrant_image(width: u32, height: u32) -> ImageData {
+        let mut rgba = Vec::with_capacity((width * height * 4) as usize);
+        for y in 0..height {
+            for x in 0..width {
+                let rgb = match (x < width / 2, y < height / 2) {
+                    (true, true) => [255, 0, 0],
+                    (false, true) => [0, 255, 0],
+                    (true, false) => [0, 0, 255],
+                    (false, false) => [255, 255, 0],
+                };
+                rgba.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
+            }
+        }
+        ImageData::new(width, height, rgba).unwrap()
+    }
+
+    fn jpeg_with_exif_orientation(jpeg: &[u8], orientation: u16) -> Vec<u8> {
+        assert!(jpeg.len() >= 2 && jpeg[0..2] == [0xff, 0xd8]);
+        let mut tiff = Vec::new();
+        tiff.extend_from_slice(b"MM");
+        tiff.extend_from_slice(&42u16.to_be_bytes());
+        tiff.extend_from_slice(&8u32.to_be_bytes());
+        tiff.extend_from_slice(&1u16.to_be_bytes());
+        tiff.extend_from_slice(&0x0112u16.to_be_bytes()); // Orientation
+        tiff.extend_from_slice(&3u16.to_be_bytes()); // SHORT
+        tiff.extend_from_slice(&1u32.to_be_bytes());
+        tiff.extend_from_slice(&orientation.to_be_bytes());
+        tiff.extend_from_slice(&0u16.to_be_bytes());
+        tiff.extend_from_slice(&0u32.to_be_bytes());
+
+        let mut app1 = Vec::new();
+        app1.extend_from_slice(b"Exif\0\0");
+        app1.extend_from_slice(&tiff);
+        let segment_len = (app1.len() + 2) as u16;
+
+        let mut out = Vec::with_capacity(jpeg.len() + app1.len() + 4);
+        out.extend_from_slice(&jpeg[0..2]);
+        out.extend_from_slice(&[0xff, 0xe1]);
+        out.extend_from_slice(&segment_len.to_be_bytes());
+        out.extend_from_slice(&app1);
+        out.extend_from_slice(&jpeg[2..]);
+        out
+    }
+
+    fn pixel_at(img: &ImageData, x: u32, y: u32) -> &[u8] {
+        let offset = ((y * img.width + x) * 4) as usize;
+        &img.rgba[offset..offset + 4]
+    }
+
+    fn dominant_rgb_channel(pixel: &[u8]) -> usize {
+        pixel[0..3]
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, value)| *value)
+            .map(|(index, _)| index)
+            .unwrap()
+    }
+
     fn crc32(bytes: &[u8]) -> u32 {
         let mut crc = 0xffff_ffffu32;
         for &byte in bytes {
@@ -933,6 +1026,47 @@ mod tests {
         assert_eq!((jpg_probe.width, jpg_probe.height), (32, 24));
         assert_eq!(webp_probe.format, Format::WebP);
         assert_eq!((webp_probe.width, webp_probe.height), (32, 24));
+    }
+
+    #[test]
+    fn jpeg_decode_applies_exif_orientation() {
+        let img = quadrant_image(16, 24);
+        let jpg = JpegCodec
+            .encode(
+                &img,
+                &EncodeOptions {
+                    quality: 100,
+                    lossless: false,
+                },
+            )
+            .unwrap();
+        let oriented = jpeg_with_exif_orientation(&jpg, 6);
+
+        let decoded = JpegCodec.decode(&oriented).unwrap();
+
+        assert_eq!((decoded.width, decoded.height), (24, 16));
+        assert_eq!(dominant_rgb_channel(pixel_at(&decoded, 2, 2)), 2);
+        assert_eq!(dominant_rgb_channel(pixel_at(&decoded, 21, 2)), 0);
+    }
+
+    #[test]
+    fn probe_jpeg_reports_exif_oriented_dimensions() {
+        let img = quadrant_image(16, 24);
+        let jpg = JpegCodec
+            .encode(
+                &img,
+                &EncodeOptions {
+                    quality: 90,
+                    lossless: false,
+                },
+            )
+            .unwrap();
+        let oriented = jpeg_with_exif_orientation(&jpg, 6);
+
+        let info = probe(&oriented).unwrap();
+
+        assert_eq!(info.format, Format::Jpeg);
+        assert_eq!((info.width, info.height), (24, 16));
     }
 
     #[test]

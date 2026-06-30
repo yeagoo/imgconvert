@@ -99,6 +99,8 @@ type ConvertRequest = {
   overwriteMode: OverwriteMode;
   outDir: string | null;
   relativeDir: string | null;
+  sourceWidth: number | null;
+  sourceHeight: number | null;
   fileNameTemplate: string;
   preserveMetadata: boolean;
 };
@@ -798,6 +800,8 @@ function buildConvertRequest(item: QueueItem, format: string): ConvertRequest {
     overwriteMode: settings.overwrite,
     outDir: settings.outDir,
     relativeDir: settings.outDir ? item.relativeDir : null,
+    sourceWidth: item.metadata?.width ?? null,
+    sourceHeight: item.metadata?.height ?? null,
     fileNameTemplate: settings.fileNameTemplate,
     preserveMetadata: false,
   };

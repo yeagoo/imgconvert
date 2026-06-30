@@ -5,6 +5,32 @@
 
 ---
 
+## 2026-06-30 — P1 文件可靠性:EXIF 旋正、内存预算与失败提示
+
+Codex 完成 P1 剩余文件可靠性三项的第一版可运行闭环:
+
+- **EXIF orientation 真旋正**:`imgconvert-core` 的 image-crate 解码路径读取 `ImageDecoder::orientation()` 并在 RGBA 中间图上执行 `apply_orientation()`;JPEG→任意目标和异步缩略图共享同一旋正行为。当前 re-encode 不透传 EXIF blob,因此不会把旧 orientation tag 再写出去造成二次旋转。
+- **导入尺寸驱动批量降并发**:前端把导入阶段探测到的 `sourceWidth/sourceHeight` 随转换参数传给 Tauri;后端按 `width*height*4*3` 估算单任务工作集,在 768 MiB 保守预算下把实际 worker 数压低。无尺寸提示的任务按 128 MiB 估算,core 仍保留真实尺寸上限校验。
+- **失败路径与半成品提示细化**:输入读取、输出目录创建、临时文件创建、输出写入/替换等错误现在包含具体路径;写入失败会尝试清理临时文件或失败输出,并把「已清理半成品 / 清理失败」写进错误消息。
+- **JPEG probe 显示尺寸同步**:`probe()` 解析 JPEG APP1 EXIF orientation 后返回旋正后的显示宽高,导入元数据与内存预算使用同一显示尺寸语义。
+
+验证:
+
+- `pnpm run check`:通过(0 errors / 0 warnings)。
+- `pnpm run build`:通过。
+- `pnpm run license:check`:通过,未发现 GPL/AGPL/LGPL,第三方许可生成物保持最新。
+- `cargo test -p imgconvert-core`:通过(18 tests)。
+- `cargo clippy -p imgconvert-core -- -D warnings`:通过。
+- `cargo +1.96.0 test --manifest-path src-tauri/Cargo.toml`:通过(33 tests)。
+- `cargo +1.96.0 clippy --manifest-path src-tauri/Cargo.toml -- -D warnings`:通过。
+- `cargo fmt --check`、`cargo +1.96.0 fmt --manifest-path src-tauri/Cargo.toml --check`、`git diff --check`:通过。
+- `timeout 25s xvfb-run -a pnpm tauri dev`:按预期由 timeout 结束;启动链路到达 `Running target/debug/imgconvert`。
+
+限制:
+
+- 批量内存预算是保守启发式,不是 OS 级内存 cgroup;极端编码器内部峰值仍可能高于估算。
+- ICC/EXIF 完整透传仍留在 P2「高级压缩与保真」;当前行为是像素旋正后重新编码,不保留原始元数据 blob。
+
 ## 2026-06-30 — P1 文件可靠性:目录结构与时间戳
 
 Codex 完成 P1「保留目录结构 + 保留源文件修改时间」的第一版可运行闭环:
