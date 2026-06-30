@@ -91,6 +91,22 @@ impl ImageData {
     }
 }
 
+/// 不解码像素的图片头部探测结果。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ImageProbe {
+    pub format: Format,
+    pub width: u32,
+    pub height: u32,
+    pub dpi: Option<Dpi>,
+}
+
+/// 图片声明的物理分辨率。并非所有容器都会提供该信息。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Dpi {
+    pub x: f64,
+    pub y: f64,
+}
+
 /// 支持的格式(P0.5 范围)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -247,6 +263,206 @@ pub fn convert(input: &[u8], target: Format, opts: &EncodeOptions) -> Result<Vec
         Format::from_magic(input).ok_or_else(|| Error::Unsupported("无法识别输入格式".into()))?;
     let img = codec_for(src).decode(input)?;
     codec_for(target).encode(&img, opts)
+}
+
+/// 读取图片头部元数据,用于导入阶段的尺寸/DPI ping。
+pub fn probe(input: &[u8]) -> Result<ImageProbe> {
+    let format =
+        Format::from_magic(input).ok_or_else(|| Error::Unsupported("无法识别输入格式".into()))?;
+    let (width, height, dpi) = match format {
+        Format::Jpeg => probe_jpeg(input)?,
+        Format::Png => probe_png(input)?,
+        Format::WebP => probe_webp(input)?,
+        Format::Avif => probe_avif(input)?,
+    };
+    rgba_byte_len(width, height)?;
+    Ok(ImageProbe {
+        format,
+        width,
+        height,
+        dpi,
+    })
+}
+
+fn be_u16(bytes: &[u8]) -> Option<u16> {
+    Some(u16::from_be_bytes(bytes.get(0..2)?.try_into().ok()?))
+}
+
+fn be_u32(bytes: &[u8]) -> Option<u32> {
+    Some(u32::from_be_bytes(bytes.get(0..4)?.try_into().ok()?))
+}
+
+fn probe_png(bytes: &[u8]) -> Result<(u32, u32, Option<Dpi>)> {
+    if bytes.len() < 33 || &bytes[12..16] != b"IHDR" {
+        return Err(Error::Decode("PNG 头不完整".into()));
+    }
+    let width = be_u32(&bytes[16..20]).ok_or_else(|| Error::Decode("PNG 宽度缺失".into()))?;
+    let height = be_u32(&bytes[20..24]).ok_or_else(|| Error::Decode("PNG 高度缺失".into()))?;
+
+    let mut dpi = None;
+    let mut offset = 8usize;
+    while offset + 8 <= bytes.len() {
+        let length = be_u32(&bytes[offset..offset + 4])
+            .ok_or_else(|| Error::Decode("PNG chunk 长度缺失".into()))?
+            as usize;
+        let chunk = &bytes[offset + 4..offset + 8];
+        let data_start = offset + 8;
+        let Some(data_end) = data_start.checked_add(length) else {
+            break;
+        };
+        let Some(next_offset) = data_end.checked_add(4) else {
+            break;
+        };
+        if next_offset > bytes.len() {
+            break;
+        }
+
+        if chunk == b"pHYs" && length == 9 {
+            let data = &bytes[data_start..data_end];
+            if data[8] == 1 {
+                let pixels_per_meter_x = be_u32(&data[0..4]).unwrap_or(0);
+                let pixels_per_meter_y = be_u32(&data[4..8]).unwrap_or(0);
+                if pixels_per_meter_x > 0 && pixels_per_meter_y > 0 {
+                    dpi = Some(Dpi {
+                        x: pixels_per_meter_x as f64 * 0.0254,
+                        y: pixels_per_meter_y as f64 * 0.0254,
+                    });
+                }
+            }
+        }
+        if chunk == b"IDAT" || chunk == b"IEND" {
+            break;
+        }
+        offset = next_offset;
+    }
+
+    Ok((width, height, dpi))
+}
+
+fn probe_jpeg(bytes: &[u8]) -> Result<(u32, u32, Option<Dpi>)> {
+    if bytes.len() < 4 || bytes[0..2] != [0xff, 0xd8] {
+        return Err(Error::Decode("JPEG 头不完整".into()));
+    }
+
+    let mut offset = 2usize;
+    let mut dpi = None;
+    while offset < bytes.len() {
+        while offset < bytes.len() && bytes[offset] != 0xff {
+            offset += 1;
+        }
+        while offset < bytes.len() && bytes[offset] == 0xff {
+            offset += 1;
+        }
+        if offset >= bytes.len() {
+            break;
+        }
+
+        let marker = bytes[offset];
+        offset += 1;
+        if marker == 0xda || marker == 0xd9 {
+            break;
+        }
+        if marker == 0x01 || (0xd0..=0xd7).contains(&marker) {
+            continue;
+        }
+        if offset + 2 > bytes.len() {
+            break;
+        }
+
+        let segment_length = be_u16(&bytes[offset..offset + 2])
+            .ok_or_else(|| Error::Decode("JPEG segment 长度缺失".into()))?
+            as usize;
+        if segment_length < 2 {
+            return Err(Error::Decode("JPEG segment 长度非法".into()));
+        }
+        let data_start = offset + 2;
+        let data_length = segment_length - 2;
+        let Some(data_end) = data_start.checked_add(data_length) else {
+            break;
+        };
+        if data_end > bytes.len() {
+            break;
+        }
+        let data = &bytes[data_start..data_end];
+
+        if marker == 0xe0 && dpi.is_none() {
+            dpi = parse_jfif_dpi(data);
+        }
+        if is_jpeg_sof(marker) {
+            if data.len() < 5 {
+                return Err(Error::Decode("JPEG SOF 数据不完整".into()));
+            }
+            let height =
+                be_u16(&data[1..3]).ok_or_else(|| Error::Decode("JPEG 高度缺失".into()))?;
+            let width = be_u16(&data[3..5]).ok_or_else(|| Error::Decode("JPEG 宽度缺失".into()))?;
+            return Ok((width as u32, height as u32, dpi));
+        }
+
+        offset = data_end;
+    }
+
+    Err(Error::Decode("无法读取 JPEG 尺寸".into()))
+}
+
+fn parse_jfif_dpi(data: &[u8]) -> Option<Dpi> {
+    if data.len() < 12 || &data[0..5] != b"JFIF\0" {
+        return None;
+    }
+    let unit = data[7];
+    let x_density = be_u16(&data[8..10])?;
+    let y_density = be_u16(&data[10..12])?;
+    if x_density == 0 || y_density == 0 {
+        return None;
+    }
+    match unit {
+        1 => Some(Dpi {
+            x: x_density as f64,
+            y: y_density as f64,
+        }),
+        2 => Some(Dpi {
+            x: x_density as f64 * 2.54,
+            y: y_density as f64 * 2.54,
+        }),
+        _ => None,
+    }
+}
+
+fn is_jpeg_sof(marker: u8) -> bool {
+    matches!(
+        marker,
+        0xc0 | 0xc1 | 0xc2 | 0xc3 | 0xc5 | 0xc6 | 0xc7 | 0xc9 | 0xca | 0xcb | 0xcd | 0xce | 0xcf
+    )
+}
+
+fn probe_webp(bytes: &[u8]) -> Result<(u32, u32, Option<Dpi>)> {
+    let feat =
+        webp::BitstreamFeatures::new(bytes).ok_or_else(|| Error::Decode("非法 WebP 头".into()))?;
+    if feat.has_animation() {
+        return Err(Error::Unsupported("动画 WebP 暂不支持".into()));
+    }
+    Ok((feat.width(), feat.height(), None))
+}
+
+fn probe_avif(bytes: &[u8]) -> Result<(u32, u32, Option<Dpi>)> {
+    unsafe {
+        let decoder = DecoderGuard(avif::avifDecoderCreate());
+        if decoder.0.is_null() {
+            return Err(Error::Decode("avifDecoderCreate 返回 null".into()));
+        }
+        if avif::avifDecoderSetIOMemory(decoder.0, bytes.as_ptr(), bytes.len())
+            != avif::AVIF_RESULT_OK
+        {
+            return Err(Error::Decode("avifDecoderSetIOMemory 失败".into()));
+        }
+        if avif::avifDecoderParse(decoder.0) != avif::AVIF_RESULT_OK {
+            return Err(Error::Decode("avifDecoderParse 失败".into()));
+        }
+        let image = (*decoder.0).image;
+        if image.is_null() {
+            return Err(Error::Decode("decoder.image 为 null".into()));
+        }
+        Ok(((*image).width, (*image).height, None))
+    }
 }
 
 // ---------- 通用解码(image crate)----------
@@ -571,6 +787,10 @@ mod tests {
     }
 
     fn png_with_dimensions(width: u32, height: u32) -> Vec<u8> {
+        png_with_optional_phys(width, height, None)
+    }
+
+    fn png_with_optional_phys(width: u32, height: u32, phys: Option<(u32, u32)>) -> Vec<u8> {
         let mut data = Vec::new();
         data.extend_from_slice(&width.to_be_bytes());
         data.extend_from_slice(&height.to_be_bytes());
@@ -578,20 +798,27 @@ mod tests {
 
         let mut png = Vec::new();
         png.extend_from_slice(&[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n']);
-        png.extend_from_slice(&(data.len() as u32).to_be_bytes());
-        png.extend_from_slice(b"IHDR");
-        png.extend_from_slice(&data);
-        let mut crc_input = Vec::with_capacity(4 + data.len());
-        crc_input.extend_from_slice(b"IHDR");
-        crc_input.extend_from_slice(&data);
-        png.extend_from_slice(&crc32(&crc_input).to_be_bytes());
-        png.extend_from_slice(&0u32.to_be_bytes());
-        png.extend_from_slice(b"IDAT");
-        png.extend_from_slice(&crc32(b"IDAT").to_be_bytes());
-        png.extend_from_slice(&0u32.to_be_bytes());
-        png.extend_from_slice(b"IEND");
-        png.extend_from_slice(&crc32(b"IEND").to_be_bytes());
+        append_png_chunk(&mut png, b"IHDR", &data);
+        if let Some((x, y)) = phys {
+            let mut phys_data = Vec::new();
+            phys_data.extend_from_slice(&x.to_be_bytes());
+            phys_data.extend_from_slice(&y.to_be_bytes());
+            phys_data.push(1);
+            append_png_chunk(&mut png, b"pHYs", &phys_data);
+        }
+        append_png_chunk(&mut png, b"IDAT", &[]);
+        append_png_chunk(&mut png, b"IEND", &[]);
         png
+    }
+
+    fn append_png_chunk(png: &mut Vec<u8>, name: &[u8; 4], data: &[u8]) {
+        png.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        png.extend_from_slice(name);
+        png.extend_from_slice(data);
+        let mut crc_input = Vec::with_capacity(4 + data.len());
+        crc_input.extend_from_slice(name);
+        crc_input.extend_from_slice(data);
+        png.extend_from_slice(&crc32(&crc_input).to_be_bytes());
     }
 
     #[test]
@@ -622,6 +849,41 @@ mod tests {
             matches!(err, Error::Unsupported(ref message) if message.contains("超过上限")),
             "{err:?}"
         );
+    }
+
+    #[test]
+    fn probe_png_dimensions_and_dpi_without_pixel_decode() {
+        let png = png_with_optional_phys(320, 240, Some((11_811, 11_811))); // ~300 DPI
+        let info = probe(&png).unwrap();
+
+        assert_eq!(info.format, Format::Png);
+        assert_eq!((info.width, info.height), (320, 240));
+        let dpi = info.dpi.unwrap();
+        assert!((dpi.x - 300.0).abs() < 0.1);
+        assert!((dpi.y - 300.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn probe_encoded_formats_dimensions() {
+        let img = synth(32, 24);
+        let jpg = JpegCodec.encode(&img, &EncodeOptions::default()).unwrap();
+        let webp = WebpCodec
+            .encode(
+                &img,
+                &EncodeOptions {
+                    quality: 80,
+                    lossless: true,
+                },
+            )
+            .unwrap();
+
+        let jpg_probe = probe(&jpg).unwrap();
+        let webp_probe = probe(&webp).unwrap();
+
+        assert_eq!(jpg_probe.format, Format::Jpeg);
+        assert_eq!((jpg_probe.width, jpg_probe.height), (32, 24));
+        assert_eq!(webp_probe.format, Format::WebP);
+        assert_eq!((webp_probe.width, webp_probe.height), (32, 24));
     }
 
     #[test]

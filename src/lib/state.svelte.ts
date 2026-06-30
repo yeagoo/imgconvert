@@ -18,6 +18,7 @@ export interface QueueItem {
   status: ItemStatus;
   detail: string;
   targetFormat: string | null;
+  metadata: ImageMetadata | null;
   progress?: number;
   preview?: boolean;
 }
@@ -40,6 +41,14 @@ export interface ImportScanError {
 export interface ImportScanFile {
   path: string;
   key: string;
+  metadata: ImageMetadata | null;
+}
+export interface ImageMetadata {
+  format: string;
+  width: number;
+  height: number;
+  dpiX: number | null;
+  dpiY: number | null;
 }
 export interface ImportScanResult {
   files: ImportScanFile[];
@@ -305,6 +314,23 @@ export function fmtSize(b: number): string {
   return `${(b / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${u[i]}`;
 }
 
+export function formatImageMetadata(metadata: ImageMetadata | null): string {
+  if (!metadata) return "";
+  const parts = [`${metadata.width}×${metadata.height}`];
+  const dpi = formatDpi(metadata);
+  if (dpi) parts.push(dpi);
+  return parts.join(" · ");
+}
+
+function formatDpi(metadata: ImageMetadata): string {
+  const x = metadata.dpiX;
+  const y = metadata.dpiY;
+  if (!x || !y) return "";
+  const roundedX = Math.round(x);
+  const roundedY = Math.round(y);
+  return roundedX === roundedY ? `${roundedX} DPI` : `${roundedX}×${roundedY} DPI`;
+}
+
 export interface AddPathsResult {
   added: number;
   duplicates: number;
@@ -339,6 +365,7 @@ export function addPaths(paths: AddPathInput[]): AddPathsResult {
       status: "pending",
       detail: "",
       targetFormat: null,
+      metadata: candidate.metadata ?? null,
     });
     existingKeys.add(candidate.key);
     existingPaths.add(candidate.path);
@@ -348,10 +375,11 @@ export function addPaths(paths: AddPathInput[]): AddPathsResult {
 }
 
 function normalizeAddPathInput(input: AddPathInput): ImportScanFile {
-  if (typeof input === "string") return { path: input, key: input };
+  if (typeof input === "string") return { path: input, key: input, metadata: null };
   return {
     path: input.path,
     key: input.key || input.path,
+    metadata: input.metadata ?? null,
   };
 }
 
@@ -437,6 +465,7 @@ export function addDemoItems() {
       status: "pending",
       detail: "网页预览示例",
       targetFormat: null,
+      metadata: null,
       preview: true,
     });
   }

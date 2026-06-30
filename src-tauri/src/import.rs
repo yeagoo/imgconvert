@@ -7,12 +7,13 @@
 //! 与 macOS security-scoped bookmark 应接在这一层之下，而不是散落到前端。
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
+use std::fs::{self, File};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use imgconvert_core::{Format, READABLE_FORMATS};
+use imgconvert_core::{probe, Format, READABLE_FORMATS};
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
@@ -22,6 +23,7 @@ const DEFAULT_MAX_DEPTH: usize = 64;
 const HARD_MAX_FILES: usize = 100_000;
 const HARD_MAX_ENTRIES: usize = 500_000;
 const HARD_MAX_DEPTH: usize = 256;
+const PROBE_MAX_BYTES: u64 = 512 * 1024;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -53,6 +55,17 @@ pub struct ImportScanResult {
 pub struct ImportScanFile {
     pub path: String,
     pub key: String,
+    pub metadata: Option<ImportImageMetadata>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportImageMetadata {
+    pub format: String,
+    pub width: u32,
+    pub height: u32,
+    pub dpi_x: Option<f64>,
+    pub dpi_y: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -90,12 +103,17 @@ struct PendingPath {
     depth: usize,
 }
 
+struct ScannedFile {
+    path: PathBuf,
+    metadata: Option<ImportImageMetadata>,
+}
+
 struct Scanner {
     allowed_extensions: BTreeSet<String>,
     recursive: bool,
     limits: ScanLimits,
     cancel: CancellationToken,
-    files: BTreeMap<PathBuf, PathBuf>,
+    files: BTreeMap<PathBuf, ScannedFile>,
     entries_seen: usize,
     skipped: usize,
     errors: Vec<ImportScanError>,
@@ -343,7 +361,8 @@ impl Scanner {
             return;
         }
 
-        self.files.insert(key, path);
+        let metadata = probe_file_metadata(&path);
+        self.files.insert(key, ScannedFile { path, metadata });
         if self.files.len() >= self.limits.max_files {
             self.truncate("文件数量达到上限");
         }
@@ -376,15 +395,16 @@ impl Scanner {
     fn finish(mut self) -> ImportScanResult {
         let scanned_files = std::mem::take(&mut self.files);
         let mut files = Vec::with_capacity(scanned_files.len());
-        for (key, path) in scanned_files {
-            match path.to_str() {
+        for (key, file) in scanned_files {
+            match file.path.to_str() {
                 Some(path) => files.push(ImportScanFile {
                     path: path.to_string(),
                     key: key.to_string_lossy().to_string(),
+                    metadata: file.metadata,
                 }),
                 None => {
                     self.skipped += 1;
-                    self.error(&path, "路径不是有效 UTF-8");
+                    self.error(&file.path, "路径不是有效 UTF-8");
                 }
             }
         }
@@ -405,6 +425,23 @@ impl Scanner {
             message: message.into(),
         });
     }
+}
+
+fn probe_file_metadata(path: &Path) -> Option<ImportImageMetadata> {
+    let mut file = File::open(path).ok()?;
+    let mut bytes = Vec::with_capacity(16 * 1024);
+    file.by_ref()
+        .take(PROBE_MAX_BYTES)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    let info = probe(&bytes).ok()?;
+    Some(ImportImageMetadata {
+        format: info.format.id().to_string(),
+        width: info.width,
+        height: info.height,
+        dpi_x: info.dpi.map(|dpi| dpi.x),
+        dpi_y: info.dpi.map(|dpi| dpi.y),
+    })
 }
 
 #[cfg(test)]
@@ -442,6 +479,38 @@ mod tests {
 
     fn result_paths(result: &ImportScanResult) -> Vec<String> {
         result.files.iter().map(|file| file.path.clone()).collect()
+    }
+
+    fn png_with_dimensions(width: u32, height: u32) -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(&width.to_be_bytes());
+        data.extend_from_slice(&height.to_be_bytes());
+        data.extend_from_slice(&[8, 6, 0, 0, 0]);
+
+        let mut png = Vec::new();
+        png.extend_from_slice(&[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n']);
+        append_png_chunk(&mut png, b"IHDR", &data);
+        append_png_chunk(&mut png, b"IDAT", &[]);
+        append_png_chunk(&mut png, b"IEND", &[]);
+        png
+    }
+
+    fn append_png_chunk(png: &mut Vec<u8>, name: &[u8; 4], data: &[u8]) {
+        png.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        png.extend_from_slice(name);
+        png.extend_from_slice(data);
+        let mut crc = 0xffff_ffffu32;
+        for &byte in name.iter().chain(data.iter()) {
+            crc ^= byte as u32;
+            for _ in 0..8 {
+                if crc & 1 == 1 {
+                    crc = (crc >> 1) ^ 0xedb8_8320;
+                } else {
+                    crc >>= 1;
+                }
+            }
+        }
+        png.extend_from_slice(&(!crc).to_be_bytes());
     }
 
     #[test]
@@ -489,6 +558,23 @@ mod tests {
         );
         assert_eq!(result.skipped, 0);
         assert!(result.errors.is_empty());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn scan_pings_image_dimensions_when_header_is_available() {
+        let dir = unique_test_dir("metadata");
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("sample.png");
+        fs::write(&file, png_with_dimensions(64, 48)).unwrap();
+
+        let result = scan(options(vec![file.clone()]));
+
+        assert_eq!(result.files.len(), 1);
+        let metadata = result.files[0].metadata.as_ref().unwrap();
+        assert_eq!(metadata.format, "png");
+        assert_eq!((metadata.width, metadata.height), (64, 48));
 
         fs::remove_dir_all(dir).unwrap();
     }

@@ -12,6 +12,7 @@
     extOf,
     formatAccent,
     formatFromExt,
+    formatImageMetadata,
     formatLabel,
     itemProgress,
     itemTargetFormat,
@@ -25,12 +26,13 @@
   let { item }: { item: QueueItem } = $props();
 
   const busy = $derived(ui.converting || ui.importing);
-  const sourceFormat = $derived(formatFromExt(extOf(item.path)));
+  const sourceFormat = $derived(item.metadata?.format ?? formatFromExt(extOf(item.path)));
   const targetFormat = $derived(itemTargetFormat(item));
   const sourceAccent = $derived(formatAccent(sourceFormat));
   const targetAccent = $derived(formatAccent(targetFormat));
   const progress = $derived(itemProgress(item));
   const sourceFormats = $derived(sourceFormat ? [sourceFormat] : []);
+  const metadataText = $derived(formatImageMetadata(item.metadata));
   const statusLabel = $derived(
     item.status === "running"
       ? "转换中"
@@ -72,7 +74,12 @@
     <div class="flex min-w-0 items-start gap-2">
       <div class="min-w-0 flex-1">
         <div class="truncate text-sm font-medium" title={item.path}>{item.name}</div>
-        <div class="truncate text-xs text-muted-foreground" title={item.path}>{item.path}</div>
+        <div class="truncate text-xs text-muted-foreground" title={item.path}>
+          {item.path}
+        </div>
+        {#if metadataText}
+          <div class="mt-0.5 text-xs text-muted-foreground">{metadataText}</div>
+        {/if}
       </div>
 
       <button

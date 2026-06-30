@@ -5,6 +5,31 @@
 
 ---
 
+## 2026-06-30 — P1 导入元数据 ping 最小闭环
+
+Codex 完成 P1「导入阶段尺寸/DPI ping」的第一版可运行闭环:
+
+- **core 头部探测接口**:`imgconvert-core::probe(bytes)` 返回 `ImageProbe { format, width, height, dpi }`,覆盖 PNG/JPEG/WebP/AVIF。PNG 解析 `pHYs` DPI,JPEG 解析常见 JFIF density;WebP/AVIF 当前返回尺寸,DPI 为空。
+- **导入扫描携带元数据**:`scan_import_paths` 对每个候选文件限量读取前 512 KiB 做头部 ping;探测失败不阻断导入,只让 `metadata` 为空。返回 `ImportScanFile { path, key, metadata }`。
+- **前端队列展示**:队列项保存导入元数据,卡片在文件路径下显示 `宽×高` 与 DPI;源格式优先使用后端 magic 探测结果,扩展名只作回退。
+- **review 修复**:并发批量启动前新增输出路径预检,同一 batch 中重复目标路径会在 worker 启动前报错,避免 overwrite/skip/no-clobber 在文件级并发下出现抢写竞态。
+
+验证:
+
+- `pnpm run check`:通过(0 errors / 0 warnings)。
+- `pnpm run build`:通过。
+- `cargo test -p imgconvert-core`:通过(14 tests)。
+- `cargo clippy -p imgconvert-core -- -D warnings`:通过。
+- `cargo +1.96.0 test --manifest-path src-tauri/Cargo.toml`:通过(20 tests)。
+- `cargo +1.96.0 clippy --manifest-path src-tauri/Cargo.toml -- -D warnings`:通过。
+- `cargo fmt --check`:通过。
+
+限制:
+
+- 当前只做导入元数据 ping,尚未生成缩略图。
+- DPI 只覆盖 PNG `pHYs` 与 JPEG JFIF density;EXIF Resolution 标签、WebP/AVIF 容器级 DPI 后续随元数据保留一起扩展。
+- Tauri 扫描阶段最多读取每个文件前 512 KiB;极端 JPEG/AVIF 若尺寸信息晚于该范围,会保守返回空 metadata,不影响导入。
+
 ## 2026-06-30 — P1 并发批量最小闭环
 
 Codex 完成 P1「Rust 端文件级并发批量」的第一版可运行闭环:
