@@ -1,0 +1,198 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+  NODE_VERSION: "24"
+
+jobs:
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.4
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run quality:frontend
+      - run: pnpm run license:npm
+      - run: pnpm run license:verify
+      - run: pnpm run release:flatpak:verify
+
+  rust-core:
+    name: Rust Core
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --check
+      - run: cargo clippy -p imgconvert-core --all-targets -- -D warnings
+      - run: cargo test -p imgconvert-core
+
+  tauri-backend:
+    name: Tauri Backend
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+      - uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          components: rustfmt, clippy
+      - run: cargo +1.96.0 fmt --manifest-path src-tauri/Cargo.toml --check
+      - run: cargo +1.96.0 clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+      - run: cargo +1.96.0 test --manifest-path src-tauri/Cargo.toml
+
+  tauri-backend-windows:
+    name: Tauri Backend Windows HEIC
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.96.0
+      - run: cargo +1.96.0 test --manifest-path src-tauri/Cargo.toml external_codecs -- --nocapture
+
+  security:
+    name: Security And Licenses
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.4
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@1.96.0
+      - run: pnpm install --frozen-lockfile
+      - run: cargo install cargo-deny --version 0.19.9 --locked
+      - run: cargo install cargo-audit --locked
+      - run: pnpm run license:check
+      - run: cd src-tauri && cargo deny check bans sources advisories
+      - run: cd src-tauri && cargo audit
+      - run: pnpm audit --prod
+
+  e2e:
+    name: Web Preview E2E
+    runs-on: ubuntu-24.04
+    needs: frontend
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.4
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: xvfb-run -a pnpm run e2e
+
+  tauri-build-smoke:
+    name: Tauri Build Smoke (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    needs:
+      - frontend
+      - rust-core
+      - tauri-backend
+      - security
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Skip arm64 package smoke on pull requests
+        if: github.event_name == 'pull_request' && matrix.arch == 'arm64'
+        run: echo "arm64 package smoke runs on push, tag, and manual CI only."
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            meson \
+            nasm \
+            ninja-build \
+            rpm \
+            file \
+            desktop-file-utils \
+            appstream \
+            squashfs-tools \
+            xvfb \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+        if: github.event_name != 'pull_request' || matrix.arch != 'arm64'
+      - uses: pnpm/action-setup@v4
+        if: github.event_name != 'pull_request' || matrix.arch != 'arm64'
+        with:
+          version: 10.34.4
+          run_install: false
+      - uses: actions/setup-node@v4
+        if: github.event_name != 'pull_request' || matrix.arch != 'arm64'
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@1.96.0
+        if: github.event_name != 'pull_request' || matrix.arch != 'arm64'
+      - run: pnpm install --frozen-lockfile
+        if: github.event_name != 'pull_request' || matrix.arch != 'arm64'
+      - run: pnpm run release:linux:debug
+        if: github.event_name != 'pull_request' || matrix.arch != 'arm64'
+      - run: pnpm run release:linux:smoke:deb:debug
+        if: github.event_name != 'pull_request' || matrix.arch != 'arm64'
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request' || matrix.arch != 'arm64'
+        with:
+          name: imgconvert-linux-${{ matrix.arch }}-debug
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            src-tauri/target/debug/bundle/deb/*.deb

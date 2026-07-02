@@ -1,0 +1,86 @@
+name: Linux Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      docker_smoke:
+        description: Run Docker install/runtime smoke matrix after building packages.
+        required: true
+        default: true
+        type: boolean
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-linux-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+  NODE_VERSION: "24"
+
+jobs:
+  linux-release:
+    name: Linux Release (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            meson \
+            nasm \
+            ninja-build \
+            rpm \
+            file \
+            desktop-file-utils \
+            appstream \
+            squashfs-tools \
+            xvfb \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.4
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@1.96.0
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run release:flatpak:verify
+      - run: pnpm run release:linux
+      - run: pnpm run release:linux:smoke:deb -- --convert-smoke
+      - run: pnpm run release:linux:smoke:docker
+        if: github.event_name != 'workflow_dispatch' || inputs.docker_smoke
+      - uses: actions/upload-artifact@v4
+        with:
+          name: imgconvert-linux-${{ matrix.arch }}-release
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/rpm/*.rpm
+            src-tauri/target/release/bundle/appimage/*.AppImage
+            src-tauri/target/release/bundle/SHA256SUMS
