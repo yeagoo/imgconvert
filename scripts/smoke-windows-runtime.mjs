@@ -89,9 +89,7 @@ console.log("Windows runtime smoke completed.");
 function runPackageConversionSmoke() {
   requireWindows("Windows package conversion smoke");
   const executable = path.join(
-    repoRoot,
-    "src-tauri",
-    "target",
+    cargoTargetRoot(),
     "debug",
     process.platform === "win32" ? "imgconvert.exe" : "imgconvert",
   );
@@ -129,6 +127,12 @@ function requireWindows(feature) {
   if (!isWindows) {
     fail(`${feature} requires Windows`);
   }
+}
+
+function cargoTargetRoot() {
+  return process.env.CARGO_TARGET_DIR
+    ? path.resolve(process.env.CARGO_TARGET_DIR)
+    : path.join(repoRoot, "src-tauri", "target");
 }
 
 function printHelp() {

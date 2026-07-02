@@ -43,7 +43,7 @@ for (const bundle of options.bundles) {
 }
 
 const packageJson = JSON.parse(readFileSync(path.join(repoRoot, "package.json"), "utf8"));
-const bundleRoot = path.join(repoRoot, "src-tauri", "target", options.profile, "bundle");
+const bundleRoot = path.join(cargoTargetRoot(), options.profile, "bundle");
 const failures = [];
 const verified = [];
 
@@ -110,4 +110,10 @@ function collectFiles(dir) {
 function fail(message) {
   console.error(message);
   process.exit(1);
+}
+
+function cargoTargetRoot() {
+  return process.env.CARGO_TARGET_DIR
+    ? path.resolve(process.env.CARGO_TARGET_DIR)
+    : path.join(repoRoot, "src-tauri", "target");
 }

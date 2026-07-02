@@ -28,6 +28,11 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "1"
   NODE_VERSION: "24"
+  RUSTUP_HOME: C:\rustup
+  CARGO_HOME: C:\cargo
+  CARGO_TARGET_DIR: C:\imgconvert-target
+  CC: cl
+  CXX: cl
 
 jobs:
   windows-smoke:
@@ -63,6 +68,36 @@ jobs:
           meson --version
           ninja --version
           nasm -v
+
+      - name: Configure MSVC build environment
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vsPath) {
+            throw "Visual Studio Build Tools with MSVC x64 tools were not found"
+          }
+          $vsDevCmd = Join-Path $vsPath "Common7\Tools\VsDevCmd.bat"
+          if (-not (Test-Path $vsDevCmd)) {
+            throw "VsDevCmd.bat was not found at $vsDevCmd"
+          }
+          cmd /c "`"$vsDevCmd`" -arch=x64 -host_arch=x64 && set" | ForEach-Object {
+            if ($_ -match "^(.*?)=(.*)$") {
+              $name = $matches[1]
+              $value = $matches[2]
+              if ($name -and -not $name.StartsWith("=")) {
+                Set-Item -Path "Env:$name" -Value $value
+                if ($name -ieq "Path") {
+                  $value -split ";" | Where-Object { $_ -and (Test-Path $_) } | ForEach-Object {
+                    Add-Content -Path $env:GITHUB_PATH -Value $_
+                  }
+                } else {
+                  Add-Content -Path $env:GITHUB_ENV -Value "$name=$value"
+                }
+              }
+            }
+          }
+          cl
 
       - uses: pnpm/action-setup@v4
         with:
@@ -111,5 +146,5 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           path: |
-            src-tauri/target/release/bundle/msi/*.msi
-            src-tauri/target/release/bundle/nsis/*.exe
+            ${{ env.CARGO_TARGET_DIR }}/release/bundle/msi/*.msi
+            ${{ env.CARGO_TARGET_DIR }}/release/bundle/nsis/*.exe
