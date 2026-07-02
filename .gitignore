@@ -11,6 +11,9 @@ node_modules
 dist
 dist-ssr
 target
+.flatpak-builder
+test-results
+playwright-report
 *.local
 
 # Editor directories and files

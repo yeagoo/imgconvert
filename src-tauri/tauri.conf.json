@@ -28,6 +28,25 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "publisher": "ImgConvert contributors",
+    "homepage": "https://github.com/yeagoo/imgconvert",
+    "license": "Apache-2.0",
+    "licenseFile": "../LICENSE",
+    "category": "Photography",
+    "shortDescription": "跨平台图片批量转换工具",
+    "longDescription": "ImgConvert 是 Linux 优先的跨平台图片批量转换工具,使用 Rust 进程内图像管线转换 JPEG、PNG、WebP 与 AVIF。",
+    "linux": {
+      "deb": {
+        "section": "graphics",
+        "priority": "optional"
+      },
+      "rpm": {
+        "release": "1"
+      },
+      "appimage": {
+        "bundleMediaFramework": false
+      }
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

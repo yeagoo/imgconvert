@@ -1,0 +1,23 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "windows": {
+      "allowDowngrades": false,
+      "digestAlgorithm": "sha256",
+      "webviewInstallMode": {
+        "type": "embedBootstrapper",
+        "silent": true
+      },
+      "minimumWebview2Version": "109.0.1518.0",
+      "wix": {
+        "upgradeCode": "ba075ad0-d952-596d-89cd-74db50d2c403",
+        "language": "en-US"
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false,
+        "compression": "lzma"
+      }
+    }
+  }
+}

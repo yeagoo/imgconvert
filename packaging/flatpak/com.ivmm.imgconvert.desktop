@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: Apache-2.0
+
+[Desktop Entry]
+Type=Application
+Name=ImgConvert
+Comment=Batch image conversion tool
+Exec=imgconvert
+Icon=com.ivmm.imgconvert
+Terminal=false
+Categories=Graphics;Photography;
