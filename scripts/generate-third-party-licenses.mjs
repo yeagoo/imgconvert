@@ -48,6 +48,10 @@ function normalizeLicenseText(text) {
     .trim();
 }
 
+function isPlatformSpecificPackage(packageJson) {
+  return Boolean(packageJson.os || packageJson.cpu || packageJson.libc);
+}
+
 function renderNpmLicenses() {
   const licenseGroups = JSON.parse(run("pnpm", ["licenses", "list", "--json"], { cwd: root }));
   const packages = [];
@@ -57,6 +61,10 @@ function renderNpmLicenses() {
       for (const packagePath of entry.paths ?? []) {
         const packageJsonPath = resolve(packagePath, "package.json");
         const packageJson = existsSync(packageJsonPath) ? readJson(packageJsonPath) : {};
+        if (isPlatformSpecificPackage(packageJson)) {
+          continue;
+        }
+
         const name = packageJson.name ?? entry.name;
         const version =
           packageJson.version ??
@@ -113,6 +121,9 @@ ${files}`;
   return `# npm Third-Party Licenses
 
 Generated from \`pnpm licenses list --json\` and installed package license files.
+Platform-specific optional native build packages are omitted from this bundled
+notice to keep the generated file stable across CPU architectures; they are
+still covered by \`pnpm run license:npm\` policy checks.
 
 ## npm Overview
 
