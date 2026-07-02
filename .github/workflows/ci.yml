@@ -123,7 +123,7 @@ jobs:
       - run: cargo install cargo-about --version ${{ env.CARGO_ABOUT_VERSION }} --locked --features cli
       - run: pnpm run license:check
       - run: cd src-tauri && cargo deny check bans sources advisories
-      - run: cd src-tauri && cargo audit
+      - run: pnpm run audit:rust
       - run: pnpm audit --prod
 
   e2e:

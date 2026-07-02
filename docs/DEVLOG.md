@@ -5,6 +5,18 @@
 
 ---
 
+## 2026-07-02 — CI 远端实跑修复:RustSec 上游 advisory 例外边界
+
+Codex 推送 GitHub Actions 后实跑主 CI,修复 Linux/Windows/许可证几轮环境差异,并把最后的 RustSec 阻断收口为显式边界:
+
+- **远端 CI 已实跑到主链路**:Frontend、Rust Core、Tauri Backend、Windows HEIC 外部 codec 协议测试、Web Preview E2E 均通过。Security job 最后卡在 RustSec advisory,不是 GPL/AGPL/LGPL 许可红线。
+- **Tauri patch 更新**:`src-tauri/Cargo.lock` 更新 `tauri 2.11.3 -> 2.11.5`、`tauri-runtime-wry 2.11.3 -> 2.11.4`。该更新未改变 `tauri-utils 2.9.3 / plist 1.9.0 / quick-xml 0.39.4` 约束。
+- **显式 RustSec 例外**:`src-tauri/deny.toml` 和 `scripts/audit-rust-advisories.mjs` 记录当前上游例外 ID。范围包括 Tauri Linux GTK3/WebKitGTK 栈的 gtk-rs GTK3 unmaintained advisory、Tauri `plist -> quick-xml` 配置解析链的 `quick-xml` 0.39.x advisory、以及 Tauri/rav1e 构建链的 unmaintained-only advisory。
+- **风险边界**:`quick-xml` 不是 ImgConvert 图片输入解码路径,来自 Tauri 配置/plist 处理链;普通 `cargo update -p quick-xml` 被 `plist 1.9.0` semver 约束挡住,当前上游需等 `plist/tauri-utils` 切到 `quick-xml >=0.41.0` 后删除例外。
+- **CI 调整**:GitHub Security job 继续跑 `license:check`、`cargo deny check bans sources advisories`、Rust audit 和 `pnpm audit --prod`;Rust audit 改由 `pnpm run audit:rust` 注入同一组显式 ignore,避免 deny/audit 两套例外漂移。
+
+---
+
 ## 2026-07-02 — 图像管线后续增强:质量 heuristics 第一批 + AVIF lossless guardrail
 
 Codex 继续推进 P2/P3 后的图像管线增强,本批先落地可自动测试、无新增许可风险的守门项:

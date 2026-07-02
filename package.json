@@ -24,7 +24,7 @@
     "license:third-party": "node scripts/generate-third-party-licenses.mjs",
     "license:verify": "node scripts/generate-third-party-licenses.mjs --check",
     "audit:npm": "pnpm audit --prod",
-    "audit:rust": "cd src-tauri && cargo audit",
+    "audit:rust": "node scripts/audit-rust-advisories.mjs",
     "toolchain:check": "node scripts/check-native-toolchain.mjs",
     "toolchain:check:linux:deb": "node scripts/check-native-toolchain.mjs --linux-bundles=deb",
     "toolchain:check:linux:all": "node scripts/check-native-toolchain.mjs --linux-bundles=deb,rpm,appimage",

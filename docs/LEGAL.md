@@ -96,6 +96,7 @@
 ## 合规自动化与审计范围
 
 - `src-tauri/deny.toml`(cargo-deny)**禁止 GPL/AGPL/LGPL**,只放行宽松许可;CI 自动运行 `pnpm run license:rust`。
+- RustSec advisory gate 有显式上游例外清单:`src-tauri/deny.toml` 与 `scripts/audit-rust-advisories.mjs` 必须同步。例外只覆盖当前 Tauri GTK3/WebKitGTK、Tauri `plist -> quick-xml` 配置解析链和 rav1e/libavif 构建链的已知 ID;不得用它放行新 codec 输入解析漏洞或新增 GPL/AGPL/LGPL 依赖。
 - `cargo-about`(`src-tauri/about.toml` 白名单 + 模板)**自动生成 Rust 许可全文**,通过 `pnpm run license:third-party` 跑。
 - npm 侧通过 `pnpm licenses list --json` 获取依赖元数据,再读取已安装包中的 `LICENSE` / `NOTICE` / `COPYING` 文件全文并纳入 `THIRD_PARTY_LICENSES.md`;`pnpm run license:verify` 校验生成物是否过期。
 - 完整许可清单需综合:`cargo deny`(Cargo)+ `scripts/check-npm-licenses.mjs`(npm 禁止许可扫描)+ `cargo-about` / `scripts/generate-third-party-licenses.mjs`(NOTICE/THIRD_PARTY)。

@@ -7513,10 +7513,10 @@ Used by:
 - tauri-plugin-opener 2.5.4 — https://github.com/tauri-apps/plugins-workspace
 - tauri-plugin-store 2.4.3 — https://github.com/tauri-apps/plugins-workspace
 - tauri-plugin 2.6.3 — https://github.com/tauri-apps/tauri
-- tauri-runtime-wry 2.11.3 — https://github.com/tauri-apps/tauri
+- tauri-runtime-wry 2.11.4 — https://github.com/tauri-apps/tauri
 - tauri-runtime 2.11.3 — https://github.com/tauri-apps/tauri
 - tauri-utils 2.9.3 — https://github.com/tauri-apps/tauri
-- tauri 2.11.3 — https://github.com/tauri-apps/tauri
+- tauri 2.11.5 — https://github.com/tauri-apps/tauri
 - thiserror-impl 1.0.69 — https://github.com/dtolnay/thiserror
 - thiserror-impl 2.0.18 — https://github.com/dtolnay/thiserror
 - thiserror 1.0.69 — https://github.com/dtolnay/thiserror

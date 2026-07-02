@@ -35,6 +35,37 @@ allow = [
 
 [advisories]
 # 默认拉取 RustSec 公告库,有漏洞则报错。
+#
+# 临时例外(2026-07-02):
+# - Tauri 2.11.x 的 Linux WebKitGTK/GTK3 栈仍依赖 gtk-rs GTK3 0.18,上游已标记
+#   unmaintained,但当前 Tauri Linux GUI 没有可用的 gtk4-rs 替代切换路径。
+# - quick-xml 0.39.4 由 Tauri -> plist -> tauri-utils 引入,只在 Tauri 配置/plist
+#   处理链上,不处理用户图片输入。plist 1.9.0 / tauri-utils 2.9.3 当前仍未把
+#   quick-xml 升到 patched >=0.41.0。
+# - paste / proc-macro-error / unic-* 为上游 Tauri 或 libavif/rav1e 构建链的
+#   unmaintained advisory,当前无直接可替换版本。
+# 这些 ID 必须与 scripts/audit-rust-advisories.mjs 同步;出现可升级上游版本时删除。
+ignore = [
+  "RUSTSEC-2024-0370",
+  "RUSTSEC-2024-0411",
+  "RUSTSEC-2024-0412",
+  "RUSTSEC-2024-0413",
+  "RUSTSEC-2024-0414",
+  "RUSTSEC-2024-0415",
+  "RUSTSEC-2024-0416",
+  "RUSTSEC-2024-0417",
+  "RUSTSEC-2024-0418",
+  "RUSTSEC-2024-0419",
+  "RUSTSEC-2024-0420",
+  "RUSTSEC-2024-0436",
+  "RUSTSEC-2025-0075",
+  "RUSTSEC-2025-0080",
+  "RUSTSEC-2025-0081",
+  "RUSTSEC-2025-0098",
+  "RUSTSEC-2025-0100",
+  "RUSTSEC-2026-0194",
+  "RUSTSEC-2026-0195",
+]
 yanked = "deny"
 
 [bans]
