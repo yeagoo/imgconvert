@@ -96,22 +96,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.96.0
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-node@v4
         with:
-          python-version: "3.x"
-      - uses: ilammy/msvc-dev-cmd@v1
-      - name: Install native codec build tools
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install meson ninja
-          choco install nasm -y
-          meson --version
-          ninja --version
-          nasm --version
-      - run: cargo +1.96.0 test --manifest-path src-tauri/Cargo.toml external_codecs -- --nocapture
-        env:
-          CC: cl
-          CXX: cl
+          node-version: ${{ env.NODE_VERSION }}
+      - run: node scripts/test-external-codecs-ci.mjs
 
   security:
     name: Security And Licenses
