@@ -1578,32 +1578,39 @@ fn result_cache_dir() -> Option<PathBuf> {
         return Some(PathBuf::from(dir));
     }
 
-    #[cfg(target_os = "windows")]
-    {
-        return std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .map(|base| base.join("ImgConvert").join("Cache").join("results"));
-    }
+    platform_result_cache_dir()
+}
 
-    #[cfg(target_os = "macos")]
-    {
-        return std::env::var_os("HOME").map(PathBuf::from).map(|home| {
-            home.join("Library")
-                .join("Caches")
-                .join("ImgConvert")
-                .join("results")
-        });
-    }
+#[cfg(target_os = "windows")]
+fn platform_result_cache_dir() -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .map(|base| base.join("ImgConvert").join("Cache").join("results"))
+}
 
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        if let Some(cache_home) = std::env::var_os("XDG_CACHE_HOME") {
-            return Some(PathBuf::from(cache_home).join("imgconvert").join("results"));
-        }
-        std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .map(|home| home.join(".cache").join("imgconvert").join("results"))
+#[cfg(target_os = "macos")]
+fn platform_result_cache_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(PathBuf::from).map(|home| {
+        home.join("Library")
+            .join("Caches")
+            .join("ImgConvert")
+            .join("results")
+    })
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn platform_result_cache_dir() -> Option<PathBuf> {
+    if let Some(cache_home) = std::env::var_os("XDG_CACHE_HOME") {
+        return Some(PathBuf::from(cache_home).join("imgconvert").join("results"));
     }
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join(".cache").join("imgconvert").join("results"))
+}
+
+#[cfg(not(any(unix, target_os = "windows")))]
+fn platform_result_cache_dir() -> Option<PathBuf> {
+    None
 }
 
 fn should_count_as_skipped(opts: &ConvertOptions, message: &str) -> bool {

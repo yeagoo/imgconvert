@@ -1328,18 +1328,13 @@ fn has_unsafe_write_bit(_metadata: &fs::Metadata) -> bool {
     false
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn has_unsafe_writable_ancestor(dir: &Path) -> bool {
     dir.ancestors().any(|ancestor| {
         fs::metadata(ancestor)
             .map(|metadata| has_unsafe_write_bit(&metadata))
             .unwrap_or(false)
     })
-}
-
-#[cfg(not(unix))]
-fn has_unsafe_writable_ancestor(_dir: &Path) -> bool {
-    false
 }
 
 fn canonical_regular_file(path: &Path) -> std::io::Result<(PathBuf, fs::Metadata)> {
@@ -1621,6 +1616,7 @@ fn stderr_suffix(stderr: &str) -> String {
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
     static SELECTED_HELPER_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn unique_test_dir(name: &str) -> PathBuf {
@@ -1631,6 +1627,7 @@ mod tests {
         ))
     }
 
+    #[cfg(any(target_os = "linux", windows))]
     fn unique_manifest_test_dir(name: &str) -> PathBuf {
         let counter = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
         #[cfg(windows)]
@@ -1659,7 +1656,7 @@ mod tests {
             ))
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     fn make_executable(path: &Path) {
         use std::os::unix::fs::PermissionsExt;
         let mut permissions = fs::metadata(path).unwrap().permissions();
@@ -1667,7 +1664,7 @@ mod tests {
         fs::set_permissions(path, permissions).unwrap();
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     fn set_mode(path: &Path, mode: u32) {
         use std::os::unix::fs::PermissionsExt;
         let mut permissions = fs::metadata(path).unwrap().permissions();
@@ -1820,10 +1817,12 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 
+    #[cfg(target_os = "linux")]
     struct SelectedHelperReset {
         _guard: std::sync::MutexGuard<'static, ()>,
     }
 
+    #[cfg(target_os = "linux")]
     impl SelectedHelperReset {
         fn new() -> Self {
             let guard = SELECTED_HELPER_TEST_LOCK.lock().unwrap();
@@ -1833,6 +1832,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     impl Drop for SelectedHelperReset {
         fn drop(&mut self) {
             if let Ok(mut state) = SELECTED_HEIC_HELPER.lock() {
@@ -2195,6 +2195,7 @@ exit 7
         fs::remove_dir_all(dir).unwrap();
     }
 
+    #[cfg(any(target_os = "linux", windows))]
     fn write_manifest(dir: &Path, decode: &str, writable: &str, license: &str) {
         let manifest = format!(
             r#"{{

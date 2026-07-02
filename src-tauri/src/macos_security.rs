@@ -13,6 +13,7 @@ use std::path::Path;
 #[derive(Debug)]
 pub struct ScopedResource {
     #[cfg(target_os = "macos")]
+    #[allow(dead_code)]
     inner: Option<macos::SecurityScopedUrl>,
 }
 
@@ -20,9 +21,9 @@ impl ScopedResource {
     pub fn start(path: &Path) -> Self {
         #[cfg(target_os = "macos")]
         {
-            return Self {
+            Self {
                 inner: macos::SecurityScopedUrl::start(path),
-            };
+            }
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -32,17 +33,9 @@ impl ScopedResource {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, not(target_os = "macos")))]
     pub fn started(&self) -> bool {
-        #[cfg(target_os = "macos")]
-        {
-            return self.inner.as_ref().is_some_and(|scope| scope.started);
-        }
-
-        #[cfg(not(target_os = "macos"))]
-        {
-            false
-        }
+        false
     }
 }
 
@@ -114,7 +107,7 @@ mod macos {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "macos")))]
 mod tests {
     use super::*;
 

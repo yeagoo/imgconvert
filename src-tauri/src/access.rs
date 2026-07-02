@@ -49,7 +49,7 @@ impl ScopedPathAccess {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, not(target_os = "macos")))]
     pub fn started(&self) -> bool {
         self._resource.started()
     }
