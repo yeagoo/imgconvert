@@ -122,10 +122,19 @@ jobs:
                 } else {
                   Add-Content -Path $env:GITHUB_ENV -Value "$name=$value"
                 }
+                if ($name -ieq "VCToolsInstallDir") {
+                  $linker = Join-Path $value "bin\Hostx64\x64\link.exe"
+                  if (-not (Test-Path $linker)) {
+                    throw "MSVC linker was not found at $linker"
+                  }
+                  Add-Content -Path $env:GITHUB_ENV -Value "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$linker"
+                  $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = $linker
+                }
               }
             }
           }
           cl
+          & $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER /?
 
       - uses: pnpm/action-setup@v4
         with:
