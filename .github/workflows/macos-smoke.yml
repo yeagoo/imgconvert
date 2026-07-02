@@ -37,6 +37,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install native codec build tools
+        run: brew install cmake meson ninja nasm
+
       - uses: pnpm/action-setup@v4
         with:
           version: 10.34.4
