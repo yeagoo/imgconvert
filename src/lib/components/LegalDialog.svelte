@@ -78,8 +78,7 @@
           <p class="text-sm text-muted-foreground">正在加载…</p>
         {:else}
           <pre
-            class="whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-muted-foreground"
-          >{licenseText}</pre>
+            class="whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-muted-foreground">{licenseText}</pre>
         {/if}
       </div>
     </div>

@@ -1,8 +1,9 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 <script lang="ts">
-  import { Images, Sun, Moon, Desktop, Info, Sparkle } from "phosphor-svelte";
+  import { Images, Sun, Moon, Desktop, Info, PuzzlePiece, Sparkle } from "phosphor-svelte";
   import { Button } from "$lib/components/ui/button";
   import LegalDialog from "$lib/components/LegalDialog.svelte";
+  import PluginDiagnosticsDialog from "$lib/components/PluginDiagnosticsDialog.svelte";
   import { settings, engine, applyTheme, persistSettings } from "$lib/state.svelte";
 
   const themeIcon = $derived(
@@ -12,6 +13,7 @@
     settings.theme === "dark" ? "深色" : settings.theme === "light" ? "浅色" : "跟随系统",
   );
   let legalOpen = $state(false);
+  let pluginDiagnosticsOpen = $state(false);
 
   function cycleTheme() {
     const order = ["light", "dark", "system"] as const;
@@ -28,14 +30,17 @@
   const ThemeIcon = $derived(themeIcon);
 </script>
 
-<header class="flex items-center gap-3">
-  <Images size={26} class="text-primary" weight="duotone" />
-  <h1 class="text-lg font-bold">ImgConvert</h1>
-  <span class="text-xs {engine.ok ? 'text-emerald-600' : 'text-destructive'}">
+<header class="flex min-w-0 items-center gap-3">
+  <Images size={26} class="shrink-0 text-primary" weight="duotone" />
+  <h1 class="shrink-0 text-lg font-bold">ImgConvert</h1>
+  <span
+    class="min-w-0 flex-1 truncate text-xs {engine.ok ? 'text-emerald-600' : 'text-destructive'}"
+    title={engine.text}
+  >
     {engine.text}
   </span>
 
-  <div class="ml-auto flex items-center gap-1">
+  <div class="flex shrink-0 items-center gap-1">
     <Button
       variant="ghost"
       size="icon"
@@ -48,10 +53,19 @@
     <Button variant="ghost" size="icon" title="主题:{themeLabel}" onclick={cycleTheme}>
       <ThemeIcon weight="duotone" />
     </Button>
+    <Button
+      variant="ghost"
+      size="icon"
+      title="插件诊断"
+      onclick={() => (pluginDiagnosticsOpen = true)}
+    >
+      <PuzzlePiece weight="duotone" />
+    </Button>
     <Button variant="ghost" size="icon" title="开源许可" onclick={() => (legalOpen = true)}>
       <Info weight="duotone" />
     </Button>
   </div>
 </header>
 
+<PluginDiagnosticsDialog bind:open={pluginDiagnosticsOpen} />
 <LegalDialog bind:open={legalOpen} />

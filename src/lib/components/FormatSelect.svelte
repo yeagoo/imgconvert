@@ -3,10 +3,7 @@
   import { tick } from "svelte";
   import { MagnifyingGlass } from "phosphor-svelte";
   import * as Select from "$lib/components/ui/select";
-  import {
-    FORMAT_CATEGORIES,
-    writableFormats,
-  } from "$lib/state.svelte";
+  import { FORMAT_CATEGORIES, writableFormats } from "$lib/state.svelte";
 
   type TriggerSize = "sm" | "default";
 
@@ -40,9 +37,7 @@
   const sourceSet = $derived(new Set(sourceFormats));
   const selectedFormat = $derived(formats.find((format) => format.value === value));
   const triggerLabel = $derived(
-    includeGlobal && value === globalValue
-      ? globalLabel
-      : selectedFormat?.label ?? "选择格式",
+    includeGlobal && value === globalValue ? globalLabel : (selectedFormat?.label ?? "选择格式"),
   );
   const filteredFormats = $derived(
     formats.filter((format) => {
@@ -91,13 +86,7 @@
   }
 </script>
 
-<Select.Root
-  type="single"
-  bind:open
-  bind:value
-  {disabled}
-  onValueChange={choose}
->
+<Select.Root type="single" bind:open bind:value {disabled} onValueChange={choose}>
   <Select.Trigger size={triggerSize} class={triggerClass}>
     <span data-slot="select-value" class="truncate">{triggerLabel}</span>
   </Select.Trigger>
@@ -143,9 +132,7 @@
               <span class="flex w-full min-w-0 items-center gap-1.5">
                 <span class="font-medium">{format.label}</span>
                 {#if sourceSet.has(format.value)}
-                  <span class="rounded border px-1 text-[10px] text-muted-foreground">
-                    源
-                  </span>
+                  <span class="rounded border px-1 text-[10px] text-muted-foreground"> 源 </span>
                 {/if}
                 {#if value === format.value}
                   <span class="rounded bg-primary px-1 text-[10px] text-primary-foreground">

@@ -17,5 +17,12 @@ webp = "0.3"
 # AVIF:libavif 容器 + rav1e 编码(纯 Rust)+ dav1d 解码(meson/ninja 构建);
 # 采 DropWebP 路线,取代裸 ravif,以正确保留 ICC/nclx/alpha。arm64 无需 nasm。
 libavif-sys = { version = "0.17", default-features = false, features = ["codec-rav1e", "codec-dav1d"] }
+# PNG iCCP metadata uses zlib compression; CRCs are needed for PNG chunk surgery.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+crc32fast = "1"
+# 感知质量评分；关闭默认 rayon，避免和文件级并发叠加。
+ssimulacra2 = { version = "0.5.1", default-features = false }
+# 实验性 PNG 有损限色；MIT，替代 GPL imagequant。
+color_quant = "2.0"
 
 [dev-dependencies]

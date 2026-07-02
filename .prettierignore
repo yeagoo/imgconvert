@@ -1,0 +1,16 @@
+dist
+node_modules
+src-tauri/target
+target
+test-results
+playwright-report
+THIRD_PARTY_LICENSES.md
+public/THIRD_PARTY_LICENSES.md
+docs
+packaging/flatpak/*.desktop
+packaging/flatpak/*.xml
+src-tauri/about.hbs
+src-tauri/gen
+Cargo.lock
+src-tauri/Cargo.lock
+pnpm-lock.yaml

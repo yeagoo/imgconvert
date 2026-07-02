@@ -8,7 +8,7 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::fs::{self, File, FileTimes, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -16,11 +16,15 @@ use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use imgconvert_core::{
-    EncodeOptions, Format, LOSSLESS_FORMATS, READABLE_FORMATS, WRITABLE_FORMATS,
+    AutoQualityOptions, AvifSubsample, EncodeOptions, Format, LOSSLESS_FORMATS, READABLE_FORMATS,
+    WRITABLE_FORMATS,
 };
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 use tokio_util::sync::CancellationToken;
+
+use crate::access;
+use crate::external_codecs;
 
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 const MAX_BATCH_CONCURRENCY: usize = 8;
@@ -45,8 +49,33 @@ pub struct Capabilities {
     pub readable: Vec<&'static str>,
     pub writable: Vec<&'static str>,
     pub lossless: Vec<&'static str>,
-    /// Linux v1 不含 HEIC；macOS/Windows 后续接系统原生能力探测。
+    /// 主程序不内置 HEIC；可选外部 provider 可在运行时启用 HEIC 导入。
     pub heic: bool,
+    /// 可选外部 codec provider。主程序不链接这些 provider 的 codec 库。
+    pub codec_providers: Vec<CodecProviderCapability>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodecProviderCapability {
+    pub id: String,
+    pub kind: String,
+    pub license: Option<String>,
+    pub readable: Vec<String>,
+    pub writable: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeDiagnostics {
+    pub available_parallelism: usize,
+    pub default_batch_concurrency: usize,
+    pub max_batch_concurrency: usize,
+    pub batch_memory_budget_bytes: u64,
+    pub unknown_job_memory_bytes: u64,
+    pub rgba_working_set_multiplier: u64,
+    pub avif_encoder_max_threads: i32,
+    pub auto_quality_max_scoring_evaluations: usize,
 }
 
 /// 单张图片的转换参数,由前端传入。
@@ -69,8 +98,59 @@ pub struct ConvertOptions {
     pub format: String,
     /// 质量 1-100(有损时生效)。
     pub quality: u8,
+    /// 有损质量下限 30-100;低于 30 视为禁用。旧前端缺字段时保持兼容。
+    #[serde(default)]
+    pub quality_floor: u8,
     /// 是否无损(对支持的格式生效:webp/png)。
     pub lossless: bool,
+    /// JPEG 是否使用 progressive scan。
+    #[serde(default = "default_jpeg_progressive")]
+    pub jpeg_progressive: bool,
+    /// oxipng 优化级别 0..=6。
+    #[serde(default = "default_png_oxipng_level")]
+    pub png_oxipng_level: u8,
+    /// 实验性 PNG 有损限色。
+    #[serde(default)]
+    pub png_lossy_quantize: bool,
+    /// PNG 限色颜色数。
+    #[serde(default = "default_png_quant_colors")]
+    pub png_quant_colors: u16,
+    /// WebP method 0..=6。
+    #[serde(default = "default_webp_method")]
+    pub webp_method: u8,
+    /// AVIF speed 0..=10(越大越快)。
+    #[serde(default = "default_avif_speed")]
+    pub avif_speed: u8,
+    /// AVIF subsample:yuv444 | yuv420。
+    #[serde(default = "default_avif_subsample")]
+    pub avif_subsample: String,
+    /// WebP near-lossless 0..=100。100 表示关闭。
+    #[serde(default = "default_webp_near_lossless")]
+    pub webp_near_lossless: u8,
+    /// WebP sharp YUV 转换。
+    #[serde(default)]
+    pub webp_sharp_yuv: bool,
+    /// MozJPEG trellis。
+    #[serde(default = "default_jpeg_trellis")]
+    pub jpeg_trellis: bool,
+    /// JPEG/WebP 自动质量,用 SSIMULACRA2 搜索达到目标分的最低质量。
+    #[serde(default)]
+    pub auto_quality: bool,
+    /// 自动质量目标分。
+    #[serde(default = "default_auto_quality_score")]
+    pub auto_quality_score: f64,
+    /// 对有损源再次输出有损格式时,要求有足够体积收益才写入。
+    #[serde(default = "default_generation_loss_protection")]
+    pub generation_loss_protection: bool,
+    /// 根据源文件 blake3 + 编码设置 hash 复用已存在输出。
+    #[serde(default = "default_result_cache")]
+    pub result_cache: bool,
+    /// 候选输出不小于源文件时跳过写入,防止越转越大。
+    #[serde(default = "default_skip_if_larger")]
+    pub skip_if_larger: bool,
+    /// 同一目标格式下尝试多个等价编码候选并取最小输出。
+    #[serde(default = "default_multi_candidate")]
+    pub multi_candidate: bool,
     /// 是否覆盖已存在的输出文件。
     pub overwrite: bool,
     /// 覆盖策略:ask | skip | overwrite。ask 由前端确认后以 overwrite 重试。
@@ -79,6 +159,58 @@ pub struct ConvertOptions {
     pub file_name_template: Option<String>,
     /// 元数据保留开关预留;core P2 才实现实际透传。
     pub preserve_metadata: Option<bool>,
+}
+
+fn default_jpeg_progressive() -> bool {
+    EncodeOptions::default().jpeg_progressive
+}
+
+fn default_png_oxipng_level() -> u8 {
+    EncodeOptions::default().png_oxipng_level
+}
+
+fn default_png_quant_colors() -> u16 {
+    EncodeOptions::default().png_quant_colors
+}
+
+fn default_webp_method() -> u8 {
+    EncodeOptions::default().webp_method
+}
+
+fn default_avif_speed() -> u8 {
+    EncodeOptions::default().avif_speed
+}
+
+fn default_avif_subsample() -> String {
+    "yuv444".to_string()
+}
+
+fn default_webp_near_lossless() -> u8 {
+    EncodeOptions::default().webp_near_lossless
+}
+
+fn default_jpeg_trellis() -> bool {
+    EncodeOptions::default().jpeg_trellis
+}
+
+fn default_auto_quality_score() -> f64 {
+    80.0
+}
+
+fn default_generation_loss_protection() -> bool {
+    true
+}
+
+fn default_result_cache() -> bool {
+    true
+}
+
+fn default_skip_if_larger() -> bool {
+    true
+}
+
+fn default_multi_candidate() -> bool {
+    true
 }
 
 /// 单张转换结果。
@@ -219,11 +351,45 @@ impl BatchRegistration {
 
 /// 返回当前平台/core 支持的格式能力。
 pub fn capabilities() -> Capabilities {
+    capabilities_with_heic_provider(external_codecs::heic_provider_info())
+}
+
+pub fn runtime_diagnostics() -> RuntimeDiagnostics {
+    RuntimeDiagnostics {
+        available_parallelism: thread::available_parallelism()
+            .map(usize::from)
+            .unwrap_or(1),
+        default_batch_concurrency: default_batch_concurrency(),
+        max_batch_concurrency: MAX_BATCH_CONCURRENCY,
+        batch_memory_budget_bytes: BATCH_MEMORY_BUDGET_BYTES,
+        unknown_job_memory_bytes: UNKNOWN_JOB_MEMORY_BYTES,
+        rgba_working_set_multiplier: RGBA_WORKING_SET_MULTIPLIER,
+        avif_encoder_max_threads: imgconvert_core::AVIF_ENCODER_MAX_THREADS,
+        auto_quality_max_scoring_evaluations: imgconvert_core::AUTO_QUALITY_MAX_SCORING_EVALUATIONS,
+    }
+}
+
+fn capabilities_with_heic_provider(
+    heic_provider: Option<external_codecs::CodecProviderInfo>,
+) -> Capabilities {
+    let mut readable = format_ids(READABLE_FORMATS);
+    let mut codec_providers = Vec::new();
+    if let Some(provider) = heic_provider {
+        readable.push("heic");
+        codec_providers.push(CodecProviderCapability {
+            id: provider.id,
+            kind: provider.kind.to_string(),
+            license: provider.license,
+            readable: provider.readable,
+            writable: provider.writable,
+        });
+    }
     Capabilities {
-        readable: format_ids(READABLE_FORMATS),
+        readable,
         writable: format_ids(WRITABLE_FORMATS),
         lossless: format_ids(LOSSLESS_FORMATS),
-        heic: false,
+        heic: !codec_providers.is_empty(),
+        codec_providers,
     }
 }
 
@@ -307,9 +473,9 @@ fn output_path(opts: &ConvertOptions) -> Result<PathBuf, String> {
     let stem = stem.to_string_lossy();
     let output_stem = apply_file_name_template(opts.file_name_template.as_deref(), &stem, ext);
 
-    let dir: PathBuf = match opts.out_dir.as_deref() {
-        Some(d) if !d.is_empty() => {
-            let mut dir = PathBuf::from(d);
+    let dir: PathBuf = match access::output_directory(opts.out_dir.as_deref()) {
+        Some(grant) => {
+            let mut dir = grant.into_path_buf();
             if let Some(relative_dir) = safe_relative_dir(opts.relative_dir.as_deref())? {
                 dir.push(relative_dir);
             }
@@ -518,20 +684,75 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertResult, String> {
     }
 
     let target = parse_format(&opts.format)?;
-    if opts.preserve_metadata.unwrap_or(false) {
-        return Err("保留元数据尚未实现".to_string());
+    let source = read_source_for_core(input)?;
+    let source_format = Format::from_magic(&source);
+    let source_probe = imgconvert_core::probe(&source).ok();
+    let encode_options = encode_options_for(opts, target);
+    let cache_key = opts
+        .result_cache
+        .then(|| result_cache_key(opts, target, &encode_options, &source));
+    if let Some(key) = cache_key.as_deref() {
+        if let Some(out_size) = result_cache_hit(&out, key) {
+            if let Some(message) = candidate_policy_error(
+                opts,
+                CandidatePolicyCheck {
+                    source: &source,
+                    source_format,
+                    target,
+                    encode_options: &encode_options,
+                    dimensions: source_probe
+                        .as_ref()
+                        .map(|probe| (probe.width, probe.height)),
+                    source_size: input_metadata.len(),
+                    candidate_size: out_size,
+                },
+            ) {
+                return Err(message);
+            }
+            return Ok(ConvertResult {
+                input: opts.input.clone(),
+                output: out.to_string_lossy().to_string(),
+                in_size: input_metadata.len(),
+                out_size,
+            });
+        }
     }
-    let source =
-        fs::read(input).map_err(|e| format!("无法读取输入文件 {}: {e}", input.display()))?;
-    let encoded = imgconvert_core::convert(
-        &source,
-        target,
-        &EncodeOptions {
-            quality: opts.quality.clamp(1, 100),
-            lossless: opts.lossless && target.supports_lossless(),
+    let encoded = if should_use_auto_quality(opts, target, &encode_options) {
+        let candidates = encode_candidates_for(opts, target, encode_options);
+        imgconvert_core::convert_auto_quality(
+            &source,
+            target,
+            &candidates,
+            &AutoQualityOptions {
+                min_quality: auto_quality_min(opts.quality_floor, encode_options.quality),
+                target_score: opts.auto_quality_score.clamp(1.0, 100.0),
+            },
+        )
+        .map(|result| result.bytes)
+        .map_err(|e| e.to_string())?
+    } else if opts.multi_candidate {
+        let candidates = encode_option_candidates(encode_options, target);
+        imgconvert_core::convert_best_of(&source, target, &candidates).map_err(|e| e.to_string())?
+    } else {
+        imgconvert_core::convert(&source, target, &encode_options).map_err(|e| e.to_string())?
+    };
+    let candidate_size = u64::try_from(encoded.len()).unwrap_or(u64::MAX);
+    if let Some(message) = candidate_policy_error(
+        opts,
+        CandidatePolicyCheck {
+            source: &source,
+            source_format,
+            target,
+            encode_options: &encode_options,
+            dimensions: source_probe
+                .as_ref()
+                .map(|probe| (probe.width, probe.height)),
+            source_size: input_metadata.len(),
+            candidate_size,
         },
-    )
-    .map_err(|e| e.to_string())?;
+    ) {
+        return Err(message);
+    }
 
     let write_mode = if overwrite_mode == "overwrite" {
         WriteMode::Replace
@@ -545,6 +766,9 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertResult, String> {
 
     let in_size = input_metadata.len();
     let out_size = fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
+    if let Some(key) = cache_key.as_deref() {
+        write_result_cache_record(key, &encoded, out_size);
+    }
 
     Ok(ConvertResult {
         input: opts.input.clone(),
@@ -552,6 +776,117 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertResult, String> {
         in_size,
         out_size,
     })
+}
+
+fn encode_options_for(opts: &ConvertOptions, target: Format) -> EncodeOptions {
+    let lossless = opts.lossless && target.supports_lossless();
+    EncodeOptions {
+        quality: effective_quality(opts.quality, opts.quality_floor, target, lossless),
+        lossless,
+        jpeg_progressive: opts.jpeg_progressive,
+        png_oxipng_level: opts.png_oxipng_level,
+        png_lossy_quantize: opts.png_lossy_quantize,
+        png_quant_colors: opts.png_quant_colors,
+        webp_method: opts.webp_method,
+        avif_speed: opts.avif_speed,
+        avif_subsample: parse_avif_subsample(&opts.avif_subsample),
+        webp_near_lossless: opts.webp_near_lossless,
+        webp_sharp_yuv: opts.webp_sharp_yuv,
+        jpeg_trellis: opts.jpeg_trellis,
+        preserve_metadata: opts.preserve_metadata.unwrap_or(false),
+    }
+}
+
+fn parse_avif_subsample(value: &str) -> AvifSubsample {
+    match value.to_ascii_lowercase().as_str() {
+        "yuv420" | "420" | "4:2:0" => AvifSubsample::Yuv420,
+        _ => AvifSubsample::Yuv444,
+    }
+}
+
+fn effective_quality(requested: u8, floor: u8, target: Format, lossless: bool) -> u8 {
+    let quality = requested.clamp(1, 100);
+    if lossless || matches!(target, Format::Png) {
+        return quality;
+    }
+
+    let floor = floor.clamp(0, 100);
+    if floor < 30 {
+        quality
+    } else {
+        quality.max(floor)
+    }
+}
+
+fn encode_option_candidates(base: EncodeOptions, target: Format) -> Vec<EncodeOptions> {
+    let mut candidates = Vec::new();
+    push_unique_candidate(&mut candidates, base);
+
+    match target {
+        Format::Jpeg => {
+            let mut alternate = base;
+            alternate.jpeg_progressive = !base.jpeg_progressive;
+            push_unique_candidate(&mut candidates, alternate);
+        }
+        Format::Png => {
+            let level = base.png_oxipng_level.min(6);
+            for candidate_level in [level.saturating_sub(1), level, (level + 1).min(6), 4, 6] {
+                let mut alternate = base;
+                alternate.png_oxipng_level = candidate_level;
+                push_unique_candidate(&mut candidates, alternate);
+            }
+        }
+        Format::WebP => {
+            let method = base.webp_method.min(6);
+            for candidate_method in [method, 4, 6] {
+                let mut alternate = base;
+                alternate.webp_method = candidate_method;
+                push_unique_candidate(&mut candidates, alternate);
+            }
+        }
+        Format::Avif => {}
+    }
+
+    candidates
+}
+
+fn encode_candidates_for(
+    opts: &ConvertOptions,
+    target: Format,
+    base: EncodeOptions,
+) -> Vec<EncodeOptions> {
+    if opts.multi_candidate {
+        encode_option_candidates(base, target)
+    } else {
+        vec![base]
+    }
+}
+
+fn push_unique_candidate(candidates: &mut Vec<EncodeOptions>, candidate: EncodeOptions) {
+    if !candidates.iter().any(|existing| {
+        existing.quality == candidate.quality
+            && existing.lossless == candidate.lossless
+            && existing.jpeg_progressive == candidate.jpeg_progressive
+            && existing.png_oxipng_level == candidate.png_oxipng_level
+            && existing.png_lossy_quantize == candidate.png_lossy_quantize
+            && existing.png_quant_colors == candidate.png_quant_colors
+            && existing.webp_method == candidate.webp_method
+            && existing.avif_speed == candidate.avif_speed
+            && existing.avif_subsample == candidate.avif_subsample
+            && existing.webp_near_lossless == candidate.webp_near_lossless
+            && existing.webp_sharp_yuv == candidate.webp_sharp_yuv
+            && existing.jpeg_trellis == candidate.jpeg_trellis
+            && existing.preserve_metadata == candidate.preserve_metadata
+    }) {
+        candidates.push(candidate);
+    }
+}
+
+fn read_source_for_core(input: &Path) -> Result<Vec<u8>, String> {
+    if external_codecs::is_heic_path(input) {
+        return external_codecs::decode_heic_to_png(input);
+    }
+    fs::read(input).map_err(|e| format!("无法读取输入文件 {}: {e}", input.display()))
 }
 
 fn set_modified_time(path: &Path, modified: SystemTime) -> Result<(), String> {
@@ -909,13 +1244,335 @@ fn send_cancelled_progress(
     )
 }
 
+fn should_skip_larger_candidate(
+    opts: &ConvertOptions,
+    source_size: u64,
+    candidate_size: u64,
+) -> bool {
+    opts.skip_if_larger && source_size > 0 && candidate_size >= source_size
+}
+
+fn should_use_auto_quality(
+    opts: &ConvertOptions,
+    target: Format,
+    encode_options: &EncodeOptions,
+) -> bool {
+    opts.auto_quality
+        && matches!(target, Format::Jpeg | Format::WebP)
+        && !(target == Format::WebP && encode_options.lossless)
+}
+
+fn auto_quality_min(floor: u8, max_quality: u8) -> u8 {
+    let max_quality = max_quality.clamp(1, 100);
+    if floor >= 30 {
+        floor.clamp(30, 100).min(max_quality)
+    } else {
+        30.min(max_quality)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct CandidatePolicyCheck<'a> {
+    source: &'a [u8],
+    source_format: Option<Format>,
+    target: Format,
+    encode_options: &'a EncodeOptions,
+    dimensions: Option<(u32, u32)>,
+    source_size: u64,
+    candidate_size: u64,
+}
+
+fn candidate_policy_error(
+    opts: &ConvertOptions,
+    check: CandidatePolicyCheck<'_>,
+) -> Option<String> {
+    if should_skip_larger_candidate(opts, check.source_size, check.candidate_size) {
+        return Some(skip_larger_message(check.source_size, check.candidate_size));
+    }
+    if should_skip_generation_loss(
+        opts,
+        GenerationLossCheck {
+            source: check.source,
+            source_format: check.source_format,
+            target: check.target,
+            encode_options: check.encode_options,
+            dimensions: check.dimensions,
+            source_size: check.source_size,
+            candidate_size: check.candidate_size,
+        },
+    ) {
+        return Some(generation_loss_message(
+            check.source_size,
+            check.candidate_size,
+            check.dimensions,
+        ));
+    }
+    None
+}
+
+#[derive(Clone, Copy)]
+struct GenerationLossCheck<'a> {
+    source: &'a [u8],
+    source_format: Option<Format>,
+    target: Format,
+    encode_options: &'a EncodeOptions,
+    dimensions: Option<(u32, u32)>,
+    source_size: u64,
+    candidate_size: u64,
+}
+
+fn should_skip_generation_loss(opts: &ConvertOptions, check: GenerationLossCheck<'_>) -> bool {
+    opts.generation_loss_protection
+        && check.source_size > 0
+        && is_lossy_source(check.source, check.source_format)
+        && is_lossy_target(check.target, check.encode_options)
+        && savings_basis_points(check.source_size, check.candidate_size)
+            < required_generation_savings_basis_points(check.source_size, check.dimensions)
+}
+
+fn is_lossy_source(source: &[u8], source_format: Option<Format>) -> bool {
+    match source_format {
+        Some(Format::Jpeg | Format::Avif) => true,
+        Some(Format::WebP) => webp_source_is_lossy(source),
+        Some(Format::Png) => imgconvert_core::detect_lossy_artifacts(source)
+            .ok()
+            .flatten()
+            .is_some(),
+        _ => false,
+    }
+}
+
+fn webp_source_is_lossy(source: &[u8]) -> bool {
+    if source.len() < 16 || &source[0..4] != b"RIFF" || &source[8..12] != b"WEBP" {
+        return true;
+    }
+    let mut offset = 12usize;
+    while offset + 8 <= source.len() {
+        let fourcc = &source[offset..offset + 4];
+        let Some(length) = source
+            .get(offset + 4..offset + 8)
+            .and_then(|bytes| bytes.try_into().ok())
+            .map(u32::from_le_bytes)
+            .map(|value| value as usize)
+        else {
+            return true;
+        };
+        match fourcc {
+            b"VP8 " => return true,
+            b"VP8L" => return false,
+            _ => {}
+        }
+        let data_start = offset + 8;
+        let Some(next) = data_start
+            .checked_add(length)
+            .and_then(|end| end.checked_add(length % 2))
+        else {
+            return true;
+        };
+        offset = next;
+    }
+    true
+}
+
+fn is_lossy_target(target: Format, encode_options: &EncodeOptions) -> bool {
+    matches!(target, Format::Jpeg | Format::Avif)
+        || (target == Format::WebP && !encode_options.lossless)
+}
+
+fn savings_basis_points(source_size: u64, candidate_size: u64) -> u64 {
+    if candidate_size >= source_size || source_size == 0 {
+        return 0;
+    }
+    ((source_size - candidate_size) * 10_000) / source_size
+}
+
+fn source_bits_per_pixel(source_size: u64, dimensions: Option<(u32, u32)>) -> Option<f64> {
+    let (width, height) = dimensions?;
+    let pixels = u64::from(width).checked_mul(u64::from(height))?;
+    if pixels == 0 {
+        return None;
+    }
+    Some(source_size as f64 * 8.0 / pixels as f64)
+}
+
+fn required_generation_savings_basis_points(
+    source_size: u64,
+    dimensions: Option<(u32, u32)>,
+) -> u64 {
+    match source_bits_per_pixel(source_size, dimensions) {
+        Some(bpp) if bpp < 0.5 => 800,
+        Some(bpp) if bpp < 1.0 => 500,
+        Some(bpp) if bpp < 2.0 => 300,
+        _ => 200,
+    }
+}
+
+fn generation_loss_message(
+    source_size: u64,
+    candidate_size: u64,
+    dimensions: Option<(u32, u32)>,
+) -> String {
+    let required = required_generation_savings_basis_points(source_size, dimensions) as f64 / 100.0;
+    let actual = savings_basis_points(source_size, candidate_size) as f64 / 100.0;
+    format!("代际损失防护:有损源再次压缩收益不足(需 {required:.1}%, 实际 {actual:.1}%)")
+}
+
+fn skip_larger_message(source_size: u64, candidate_size: u64) -> String {
+    format!("候选输出不小于源文件(源 {source_size} B, 输出 {candidate_size} B)")
+}
+
+fn result_cache_key(
+    opts: &ConvertOptions,
+    target: Format,
+    encode_options: &EncodeOptions,
+    source: &[u8],
+) -> String {
+    let source_hash = blake3::hash(source);
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"imgconvert-result-cache-v2\0");
+    hasher.update(source_hash.as_bytes());
+    hasher.update(target.id().as_bytes());
+    hasher.update(&[encode_options.quality]);
+    hasher.update(&[u8::from(encode_options.lossless)]);
+    hasher.update(&[u8::from(encode_options.jpeg_progressive)]);
+    hasher.update(&[encode_options.png_oxipng_level]);
+    hasher.update(&[u8::from(encode_options.png_lossy_quantize)]);
+    hasher.update(&encode_options.png_quant_colors.to_le_bytes());
+    hasher.update(&[encode_options.webp_method]);
+    hasher.update(&[encode_options.avif_speed]);
+    hasher.update(match encode_options.avif_subsample {
+        AvifSubsample::Yuv444 => b"yuv444",
+        AvifSubsample::Yuv420 => b"yuv420",
+    });
+    hasher.update(&[encode_options.webp_near_lossless]);
+    hasher.update(&[u8::from(encode_options.webp_sharp_yuv)]);
+    hasher.update(&[u8::from(encode_options.jpeg_trellis)]);
+    hasher.update(&[u8::from(encode_options.preserve_metadata)]);
+    hasher.update(&[u8::from(opts.multi_candidate)]);
+    hasher.update(&[u8::from(opts.auto_quality)]);
+    hasher.update(&opts.auto_quality_score.to_le_bytes());
+    if should_use_auto_quality(opts, target, encode_options) {
+        hasher.update(&[auto_quality_min(opts.quality_floor, encode_options.quality)]);
+    }
+    hasher.finalize().to_hex().to_string()
+}
+
+fn result_cache_hit(out: &Path, key: &str) -> Option<u64> {
+    let record = read_result_cache_record(key)?;
+    let (output_size, output_hash) = blake3_hash_file(out)?;
+    if output_size == record.output_size && output_hash.to_hex().as_str() == record.output_hash {
+        Some(output_size)
+    } else {
+        None
+    }
+}
+
+fn blake3_hash_file(path: &Path) -> Option<(u64, blake3::Hash)> {
+    let mut file = File::open(path).ok()?;
+    let output_size = file.metadata().ok()?.len();
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer).ok()?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Some((output_size, hasher.finalize()))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResultCacheRecord {
+    output_hash: String,
+    output_size: u64,
+}
+
+fn read_result_cache_record(key: &str) -> Option<ResultCacheRecord> {
+    let path = result_cache_record_path(key)?;
+    let data = fs::read_to_string(path).ok()?;
+    parse_result_cache_record(&data)
+}
+
+fn write_result_cache_record(key: &str, output: &[u8], output_size: u64) {
+    let Some(path) = result_cache_record_path(key) else {
+        return;
+    };
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    let record = format!("v1\n{}\n{}\n", blake3::hash(output).to_hex(), output_size);
+    let _ = fs::write(path, record);
+}
+
+fn parse_result_cache_record(data: &str) -> Option<ResultCacheRecord> {
+    let mut lines = data.lines();
+    if lines.next()? != "v1" {
+        return None;
+    }
+    let output_hash = lines.next()?.trim().to_string();
+    let output_size = lines.next()?.trim().parse().ok()?;
+    if output_hash.len() != 64 || !output_hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(ResultCacheRecord {
+        output_hash,
+        output_size,
+    })
+}
+
+fn result_cache_record_path(key: &str) -> Option<PathBuf> {
+    if key.len() != 64 || !key.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(result_cache_dir()?.join(format!("{key}.txt")))
+}
+
+fn result_cache_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("IMGCONVERT_RESULT_CACHE_DIR") {
+        return Some(PathBuf::from(dir));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .map(|base| base.join("ImgConvert").join("Cache").join("results"));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        return std::env::var_os("HOME").map(PathBuf::from).map(|home| {
+            home.join("Library")
+                .join("Caches")
+                .join("ImgConvert")
+                .join("results")
+        });
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if let Some(cache_home) = std::env::var_os("XDG_CACHE_HOME") {
+            return Some(PathBuf::from(cache_home).join("imgconvert").join("results"));
+        }
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .map(|home| home.join(".cache").join("imgconvert").join("results"))
+    }
+}
+
 fn should_count_as_skipped(opts: &ConvertOptions, message: &str) -> bool {
     let skip_mode = match opts.overwrite_mode.as_deref() {
         Some("skip") => true,
         None => !opts.overwrite,
         _ => false,
     };
-    skip_mode && message.contains("已存在")
+    (skip_mode && message.contains("已存在"))
+        || (opts.skip_if_larger && message.contains("不小于源文件"))
+        || (opts.generation_loss_protection && message.contains("代际损失防护"))
 }
 
 #[cfg(test)]
@@ -994,7 +1651,24 @@ mod tests {
             source_height: None,
             format: "jpeg".to_string(),
             quality: 80,
+            quality_floor: 0,
             lossless: false,
+            jpeg_progressive: default_jpeg_progressive(),
+            png_oxipng_level: default_png_oxipng_level(),
+            png_lossy_quantize: false,
+            png_quant_colors: default_png_quant_colors(),
+            webp_method: default_webp_method(),
+            avif_speed: default_avif_speed(),
+            avif_subsample: default_avif_subsample(),
+            webp_near_lossless: default_webp_near_lossless(),
+            webp_sharp_yuv: false,
+            jpeg_trellis: default_jpeg_trellis(),
+            auto_quality: false,
+            auto_quality_score: default_auto_quality_score(),
+            generation_loss_protection: false,
+            result_cache: false,
+            skip_if_larger: false,
+            multi_candidate: false,
             overwrite: false,
             overwrite_mode: Some("skip".to_string()),
             file_name_template: Some("%name%".to_string()),
@@ -1064,6 +1738,304 @@ mod tests {
     }
 
     #[test]
+    fn convert_accepts_preserve_metadata_flag() {
+        let dir = unique_test_dir("preserve-metadata-flag");
+        let out_dir = dir.join("out");
+        fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("sample.png");
+        fs::write(&input, one_by_one_png()).unwrap();
+
+        let mut options = test_convert_options(input.to_string_lossy().to_string());
+        options.out_dir = Some(out_dir.to_string_lossy().to_string());
+        options.preserve_metadata = Some(true);
+
+        let result = convert(&options).unwrap();
+
+        assert!(Path::new(&result.output).exists());
+        assert!(result.out_size > 0);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn capabilities_add_heic_as_read_only_when_helper_exists() {
+        let capabilities =
+            capabilities_with_heic_provider(Some(external_codecs::CodecProviderInfo {
+                id: "imgconvert-heic-helper".to_string(),
+                kind: "manifest",
+                license: Some("LGPL-3.0-or-later".to_string()),
+                readable: vec!["heic".to_string(), "heif".to_string(), "hif".to_string()],
+                writable: Vec::new(),
+            }));
+
+        assert!(capabilities.readable.contains(&"heic"));
+        assert!(!capabilities.writable.contains(&"heic"));
+        assert!(capabilities.heic);
+        assert_eq!(capabilities.codec_providers.len(), 1);
+        assert_eq!(capabilities.codec_providers[0].kind, "manifest");
+    }
+
+    #[test]
+    fn encode_options_carry_p2_format_parameters_and_gate_lossless() {
+        let mut options = test_convert_options("/tmp/input.png".to_string());
+        options.quality = 140;
+        options.quality_floor = 0;
+        options.lossless = true;
+        options.jpeg_progressive = false;
+        options.png_oxipng_level = 6;
+        options.png_lossy_quantize = true;
+        options.png_quant_colors = 128;
+        options.webp_method = 5;
+        options.avif_speed = 9;
+        options.avif_subsample = "yuv420".to_string();
+        options.webp_near_lossless = 80;
+        options.webp_sharp_yuv = true;
+        options.jpeg_trellis = false;
+        options.preserve_metadata = Some(true);
+
+        let webp = encode_options_for(&options, Format::WebP);
+        assert_eq!(webp.quality, 100);
+        assert!(webp.lossless);
+        assert!(!webp.jpeg_progressive);
+        assert_eq!(webp.png_oxipng_level, 6);
+        assert!(webp.png_lossy_quantize);
+        assert_eq!(webp.png_quant_colors, 128);
+        assert_eq!(webp.webp_method, 5);
+        assert_eq!(webp.avif_speed, 9);
+        assert_eq!(webp.avif_subsample, AvifSubsample::Yuv420);
+        assert_eq!(webp.webp_near_lossless, 80);
+        assert!(webp.webp_sharp_yuv);
+        assert!(!webp.jpeg_trellis);
+        assert!(webp.preserve_metadata);
+
+        let jpeg = encode_options_for(&options, Format::Jpeg);
+        assert!(!jpeg.lossless);
+    }
+
+    #[test]
+    fn encode_options_apply_lossy_quality_floor_only_when_enabled() {
+        let mut options = test_convert_options("/tmp/input.png".to_string());
+        options.quality = 12;
+        options.quality_floor = 65;
+
+        let jpeg = encode_options_for(&options, Format::Jpeg);
+        assert_eq!(jpeg.quality, 65);
+
+        let avif = encode_options_for(&options, Format::Avif);
+        assert_eq!(avif.quality, 65);
+
+        options.quality_floor = 29;
+        let webp = encode_options_for(&options, Format::WebP);
+        assert_eq!(webp.quality, 12);
+
+        options.quality_floor = 80;
+        options.lossless = true;
+        let lossless_webp = encode_options_for(&options, Format::WebP);
+        assert_eq!(lossless_webp.quality, 12);
+        assert!(lossless_webp.lossless);
+
+        let png = encode_options_for(&options, Format::Png);
+        assert_eq!(png.quality, 12);
+    }
+
+    #[test]
+    fn encode_option_candidates_expand_safe_p2_variants() {
+        let base = EncodeOptions {
+            png_oxipng_level: 4,
+            webp_method: 2,
+            jpeg_progressive: true,
+            ..EncodeOptions::default()
+        };
+
+        let jpeg = encode_option_candidates(base, Format::Jpeg);
+        assert_eq!(jpeg.len(), 2);
+        assert!(jpeg.iter().any(|candidate| candidate.jpeg_progressive));
+        assert!(jpeg.iter().any(|candidate| !candidate.jpeg_progressive));
+
+        let png = encode_option_candidates(base, Format::Png);
+        let png_levels = png
+            .iter()
+            .map(|candidate| candidate.png_oxipng_level)
+            .collect::<Vec<_>>();
+        assert_eq!(png_levels, vec![4, 3, 5, 6]);
+
+        let webp = encode_option_candidates(base, Format::WebP);
+        let webp_methods = webp
+            .iter()
+            .map(|candidate| candidate.webp_method)
+            .collect::<Vec<_>>();
+        assert_eq!(webp_methods, vec![2, 4, 6]);
+    }
+
+    #[test]
+    fn auto_quality_is_gated_to_lossy_jpeg_and_webp() {
+        let mut options = test_convert_options("/tmp/input.png".to_string());
+        options.auto_quality = true;
+
+        let jpeg = encode_options_for(&options, Format::Jpeg);
+        assert!(should_use_auto_quality(&options, Format::Jpeg, &jpeg));
+
+        let webp = encode_options_for(&options, Format::WebP);
+        assert!(should_use_auto_quality(&options, Format::WebP, &webp));
+
+        options.lossless = true;
+        let lossless_webp = encode_options_for(&options, Format::WebP);
+        assert!(!should_use_auto_quality(
+            &options,
+            Format::WebP,
+            &lossless_webp
+        ));
+        assert!(!should_use_auto_quality(
+            &options,
+            Format::Avif,
+            &encode_options_for(&options, Format::Avif)
+        ));
+    }
+
+    #[test]
+    fn auto_quality_min_respects_requested_quality_ceiling() {
+        assert_eq!(auto_quality_min(0, 80), 30);
+        assert_eq!(auto_quality_min(0, 20), 20);
+        assert_eq!(auto_quality_min(65, 80), 65);
+        assert_eq!(auto_quality_min(90, 70), 70);
+    }
+
+    #[test]
+    fn generation_loss_protection_uses_bpp_tiered_savings() {
+        let mut options = test_convert_options("/tmp/input.jpg".to_string());
+        options.generation_loss_protection = true;
+        let encode = encode_options_for(&options, Format::Jpeg);
+
+        assert!(should_skip_generation_loss(
+            &options,
+            GenerationLossCheck {
+                source: &[0xff, 0xd8, 0xff],
+                source_format: Some(Format::Jpeg),
+                target: Format::Jpeg,
+                encode_options: &encode,
+                dimensions: Some((1000, 1000)),
+                source_size: 60_000,
+                candidate_size: 57_500,
+            },
+        ));
+        assert!(!should_skip_generation_loss(
+            &options,
+            GenerationLossCheck {
+                source: &[0xff, 0xd8, 0xff],
+                source_format: Some(Format::Jpeg),
+                target: Format::Jpeg,
+                encode_options: &encode,
+                dimensions: Some((1000, 1000)),
+                source_size: 60_000,
+                candidate_size: 54_000,
+            },
+        ));
+        assert!(!should_skip_generation_loss(
+            &options,
+            GenerationLossCheck {
+                source: b"\x89PNG\r\n\x1a\n",
+                source_format: Some(Format::Png),
+                target: Format::Jpeg,
+                encode_options: &encode,
+                dimensions: Some((1000, 1000)),
+                source_size: 60_000,
+                candidate_size: 57_500,
+            },
+        ));
+    }
+
+    #[test]
+    fn result_cache_key_includes_source_and_encode_settings() {
+        let mut options = test_convert_options("/tmp/input.png".to_string());
+        options.result_cache = true;
+        let encode = encode_options_for(&options, Format::Jpeg);
+
+        let key_a = result_cache_key(&options, Format::Jpeg, &encode, b"source-a");
+        let key_b = result_cache_key(&options, Format::Jpeg, &encode, b"source-b");
+        options.quality = 70;
+        let changed_encode = encode_options_for(&options, Format::Jpeg);
+        let key_c = result_cache_key(&options, Format::Jpeg, &changed_encode, b"source-a");
+
+        assert_eq!(key_a.len(), 64);
+        assert_ne!(key_a, key_b);
+        assert_ne!(key_a, key_c);
+    }
+
+    #[test]
+    fn result_cache_key_includes_auto_quality_floor() {
+        let mut options = test_convert_options("/tmp/input.png".to_string());
+        options.result_cache = true;
+        options.auto_quality = true;
+        options.quality = 80;
+        options.quality_floor = 30;
+        let low_floor = encode_options_for(&options, Format::Jpeg);
+        let key_low_floor = result_cache_key(&options, Format::Jpeg, &low_floor, b"source-a");
+
+        options.quality_floor = 70;
+        let high_floor = encode_options_for(&options, Format::Jpeg);
+        let key_high_floor = result_cache_key(&options, Format::Jpeg, &high_floor, b"source-a");
+
+        assert_eq!(low_floor.quality, high_floor.quality);
+        assert_ne!(key_low_floor, key_high_floor);
+    }
+
+    #[test]
+    fn candidate_policy_error_applies_skip_if_larger_to_cached_size() {
+        let mut options = test_convert_options("/tmp/input.png".to_string());
+        options.skip_if_larger = true;
+        let encode = encode_options_for(&options, Format::Jpeg);
+
+        let message = candidate_policy_error(
+            &options,
+            CandidatePolicyCheck {
+                source: b"\x89PNG\r\n\x1a\n",
+                source_format: Some(Format::Png),
+                target: Format::Jpeg,
+                encode_options: &encode,
+                dimensions: Some((1, 1)),
+                source_size: 42,
+                candidate_size: 42,
+            },
+        )
+        .unwrap();
+
+        assert!(message.contains("不小于源文件"));
+    }
+
+    #[test]
+    fn blake3_hash_file_reports_size_and_hash() {
+        let dir = unique_test_dir("hash-file");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("out.bin");
+        let data = b"cached-output";
+        fs::write(&path, data).unwrap();
+
+        let (size, hash) = blake3_hash_file(&path).unwrap();
+
+        assert_eq!(size, data.len() as u64);
+        assert_eq!(hash, blake3::hash(data));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn result_cache_record_parser_rejects_malformed_data() {
+        let valid_hash = "a".repeat(64);
+        let valid = format!("v1\n{valid_hash}\n42\n");
+
+        assert_eq!(
+            parse_result_cache_record(&valid),
+            Some(ResultCacheRecord {
+                output_hash: valid_hash,
+                output_size: 42,
+            })
+        );
+        assert!(parse_result_cache_record("v0\nabc\n42\n").is_none());
+        assert!(parse_result_cache_record("v1\nnot-hex\n42\n").is_none());
+        assert!(parse_result_cache_record("v1\nabc\nsize\n").is_none());
+    }
+
+    #[test]
     fn write_output_replace_replaces_and_cleans_temp_file() {
         let dir = unique_test_dir("replace");
         fs::create_dir_all(&dir).unwrap();
@@ -1129,7 +2101,24 @@ mod tests {
             source_height: None,
             format: "jpeg".to_string(),
             quality: 80,
+            quality_floor: 0,
             lossless: false,
+            jpeg_progressive: default_jpeg_progressive(),
+            png_oxipng_level: default_png_oxipng_level(),
+            png_lossy_quantize: false,
+            png_quant_colors: default_png_quant_colors(),
+            webp_method: default_webp_method(),
+            avif_speed: default_avif_speed(),
+            avif_subsample: default_avif_subsample(),
+            webp_near_lossless: default_webp_near_lossless(),
+            webp_sharp_yuv: false,
+            jpeg_trellis: default_jpeg_trellis(),
+            auto_quality: false,
+            auto_quality_score: default_auto_quality_score(),
+            generation_loss_protection: false,
+            result_cache: false,
+            skip_if_larger: false,
+            multi_candidate: false,
             overwrite: false,
             overwrite_mode: Some("skip".to_string()),
             file_name_template: Some("%name%".to_string()),
@@ -1144,6 +2133,57 @@ mod tests {
         assert_eq!(summary.skipped, 0);
         assert_eq!(summary.failed, 0);
         assert!(out_dir.join("sample.jpg").exists());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn convert_skips_candidate_that_is_not_smaller_than_source() {
+        let dir = unique_test_dir("skip-larger-single");
+        let out_dir = dir.join("out");
+        fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("sample.png");
+        fs::write(&input, one_by_one_png()).unwrap();
+
+        let mut options = test_convert_options(input.to_string_lossy().to_string());
+        options.out_dir = Some(out_dir.to_string_lossy().to_string());
+        options.skip_if_larger = true;
+        options.multi_candidate = false;
+
+        let err = convert(&options).unwrap_err();
+
+        assert!(err.contains("不小于源文件"));
+        assert!(!out_dir.join("sample.jpg").exists());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn batch_counts_skip_if_larger_and_keeps_existing_output() {
+        let dir = unique_test_dir("skip-larger-batch");
+        let out_dir = dir.join("out");
+        fs::create_dir_all(&out_dir).unwrap();
+        let input = dir.join("sample.png");
+        let output = out_dir.join("sample.jpg");
+        fs::write(&input, one_by_one_png()).unwrap();
+        fs::write(&output, b"old").unwrap();
+
+        let mut options = test_convert_options(input.to_string_lossy().to_string());
+        options.out_dir = Some(out_dir.to_string_lossy().to_string());
+        options.overwrite = true;
+        options.overwrite_mode = Some("overwrite".to_string());
+        options.skip_if_larger = true;
+        options.multi_candidate = false;
+        let progress = Channel::<BatchProgressEvent>::new(|_| Ok(()));
+
+        let summary =
+            convert_batch(vec![options], progress, CancellationToken::new(), Some(2)).unwrap();
+
+        assert_eq!(summary.total, 1);
+        assert_eq!(summary.completed, 0);
+        assert_eq!(summary.skipped, 1);
+        assert_eq!(summary.failed, 0);
+        assert_eq!(fs::read(output).unwrap(), b"old");
 
         fs::remove_dir_all(dir).unwrap();
     }
@@ -1166,7 +2206,24 @@ mod tests {
             source_height: None,
             format: "jpeg".to_string(),
             quality: 80,
+            quality_floor: 0,
             lossless: false,
+            jpeg_progressive: default_jpeg_progressive(),
+            png_oxipng_level: default_png_oxipng_level(),
+            png_lossy_quantize: false,
+            png_quant_colors: default_png_quant_colors(),
+            webp_method: default_webp_method(),
+            avif_speed: default_avif_speed(),
+            avif_subsample: default_avif_subsample(),
+            webp_near_lossless: default_webp_near_lossless(),
+            webp_sharp_yuv: false,
+            jpeg_trellis: default_jpeg_trellis(),
+            auto_quality: false,
+            auto_quality_score: default_auto_quality_score(),
+            generation_loss_protection: false,
+            result_cache: false,
+            skip_if_larger: false,
+            multi_candidate: false,
             overwrite: false,
             overwrite_mode: Some("ask".to_string()),
             file_name_template: Some("%name%".to_string()),
@@ -1203,7 +2260,24 @@ mod tests {
             source_height: None,
             format: "jpeg".to_string(),
             quality: 80,
+            quality_floor: 0,
             lossless: false,
+            jpeg_progressive: default_jpeg_progressive(),
+            png_oxipng_level: default_png_oxipng_level(),
+            png_lossy_quantize: false,
+            png_quant_colors: default_png_quant_colors(),
+            webp_method: default_webp_method(),
+            avif_speed: default_avif_speed(),
+            avif_subsample: default_avif_subsample(),
+            webp_near_lossless: default_webp_near_lossless(),
+            webp_sharp_yuv: false,
+            jpeg_trellis: default_jpeg_trellis(),
+            auto_quality: false,
+            auto_quality_score: default_auto_quality_score(),
+            generation_loss_protection: false,
+            result_cache: false,
+            skip_if_larger: false,
+            multi_candidate: false,
             overwrite: false,
             overwrite_mode: Some("skip".to_string()),
             file_name_template: Some("%name%".to_string()),
@@ -1230,7 +2304,24 @@ mod tests {
             source_height: None,
             format: "jpeg".to_string(),
             quality: 80,
+            quality_floor: 0,
             lossless: false,
+            jpeg_progressive: default_jpeg_progressive(),
+            png_oxipng_level: default_png_oxipng_level(),
+            png_lossy_quantize: false,
+            png_quant_colors: default_png_quant_colors(),
+            webp_method: default_webp_method(),
+            avif_speed: default_avif_speed(),
+            avif_subsample: default_avif_subsample(),
+            webp_near_lossless: default_webp_near_lossless(),
+            webp_sharp_yuv: false,
+            jpeg_trellis: default_jpeg_trellis(),
+            auto_quality: false,
+            auto_quality_score: default_auto_quality_score(),
+            generation_loss_protection: false,
+            result_cache: false,
+            skip_if_larger: false,
+            multi_candidate: false,
             overwrite: false,
             overwrite_mode: Some("skip".to_string()),
             file_name_template: Some("%name%".to_string()),
@@ -1262,7 +2353,24 @@ mod tests {
                 source_height: None,
                 format: "jpeg".to_string(),
                 quality: 80,
+                quality_floor: 0,
                 lossless: false,
+                jpeg_progressive: default_jpeg_progressive(),
+                png_oxipng_level: default_png_oxipng_level(),
+                png_lossy_quantize: false,
+                png_quant_colors: default_png_quant_colors(),
+                webp_method: default_webp_method(),
+                avif_speed: default_avif_speed(),
+                avif_subsample: default_avif_subsample(),
+                webp_near_lossless: default_webp_near_lossless(),
+                webp_sharp_yuv: false,
+                jpeg_trellis: default_jpeg_trellis(),
+                auto_quality: false,
+                auto_quality_score: default_auto_quality_score(),
+                generation_loss_protection: false,
+                result_cache: false,
+                skip_if_larger: false,
+                multi_candidate: false,
                 overwrite: false,
                 overwrite_mode: Some("skip".to_string()),
                 file_name_template: Some("%name%".to_string()),
@@ -1305,7 +2413,24 @@ mod tests {
                 source_height: None,
                 format: "jpeg".to_string(),
                 quality: 80,
+                quality_floor: 0,
                 lossless: false,
+                jpeg_progressive: default_jpeg_progressive(),
+                png_oxipng_level: default_png_oxipng_level(),
+                png_lossy_quantize: false,
+                png_quant_colors: default_png_quant_colors(),
+                webp_method: default_webp_method(),
+                avif_speed: default_avif_speed(),
+                avif_subsample: default_avif_subsample(),
+                webp_near_lossless: default_webp_near_lossless(),
+                webp_sharp_yuv: false,
+                jpeg_trellis: default_jpeg_trellis(),
+                auto_quality: false,
+                auto_quality_score: default_auto_quality_score(),
+                generation_loss_protection: false,
+                result_cache: false,
+                skip_if_larger: false,
+                multi_candidate: false,
                 overwrite: true,
                 overwrite_mode: Some("overwrite".to_string()),
                 file_name_template: Some("%name%".to_string()),
@@ -1343,7 +2468,24 @@ mod tests {
             source_height: None,
             format: "jpeg".to_string(),
             quality: 80,
+            quality_floor: 0,
             lossless: false,
+            jpeg_progressive: default_jpeg_progressive(),
+            png_oxipng_level: default_png_oxipng_level(),
+            png_lossy_quantize: false,
+            png_quant_colors: default_png_quant_colors(),
+            webp_method: default_webp_method(),
+            avif_speed: default_avif_speed(),
+            avif_subsample: default_avif_subsample(),
+            webp_near_lossless: default_webp_near_lossless(),
+            webp_sharp_yuv: false,
+            jpeg_trellis: default_jpeg_trellis(),
+            auto_quality: false,
+            auto_quality_score: default_auto_quality_score(),
+            generation_loss_protection: false,
+            result_cache: false,
+            skip_if_larger: false,
+            multi_candidate: false,
             overwrite: false,
             overwrite_mode: Some("skip".to_string()),
             file_name_template: Some("%name%".to_string()),
@@ -1372,6 +2514,27 @@ mod tests {
         );
         assert_eq!(resolve_batch_concurrency(Some(999), 3), 3);
         assert!((1..=MAX_BATCH_CONCURRENCY).contains(&resolve_batch_concurrency(None, 999)));
+    }
+
+    #[test]
+    fn runtime_diagnostics_expose_concurrency_and_avif_thread_limits() {
+        let diagnostics = runtime_diagnostics();
+
+        assert!(diagnostics.available_parallelism >= 1);
+        assert!((1..=MAX_BATCH_CONCURRENCY).contains(&diagnostics.default_batch_concurrency));
+        assert_eq!(diagnostics.max_batch_concurrency, MAX_BATCH_CONCURRENCY);
+        assert_eq!(
+            diagnostics.batch_memory_budget_bytes,
+            BATCH_MEMORY_BUDGET_BYTES
+        );
+        assert_eq!(
+            diagnostics.avif_encoder_max_threads,
+            imgconvert_core::AVIF_ENCODER_MAX_THREADS
+        );
+        assert_eq!(
+            diagnostics.auto_quality_max_scoring_evaluations,
+            imgconvert_core::AUTO_QUALITY_MAX_SCORING_EVALUATIONS
+        );
     }
 
     #[test]
@@ -1418,7 +2581,24 @@ mod tests {
             source_height: None,
             format: "jpeg".to_string(),
             quality: 80,
+            quality_floor: 0,
             lossless: false,
+            jpeg_progressive: default_jpeg_progressive(),
+            png_oxipng_level: default_png_oxipng_level(),
+            png_lossy_quantize: false,
+            png_quant_colors: default_png_quant_colors(),
+            webp_method: default_webp_method(),
+            avif_speed: default_avif_speed(),
+            avif_subsample: default_avif_subsample(),
+            webp_near_lossless: default_webp_near_lossless(),
+            webp_sharp_yuv: false,
+            jpeg_trellis: default_jpeg_trellis(),
+            auto_quality: false,
+            auto_quality_score: default_auto_quality_score(),
+            generation_loss_protection: false,
+            result_cache: false,
+            skip_if_larger: false,
+            multi_candidate: false,
             overwrite: false,
             overwrite_mode: Some("skip".to_string()),
             file_name_template: Some("%name%".to_string()),
@@ -1457,7 +2637,24 @@ mod tests {
             source_height: None,
             format: "jpeg".to_string(),
             quality: 80,
+            quality_floor: 0,
             lossless: false,
+            jpeg_progressive: default_jpeg_progressive(),
+            png_oxipng_level: default_png_oxipng_level(),
+            png_lossy_quantize: false,
+            png_quant_colors: default_png_quant_colors(),
+            webp_method: default_webp_method(),
+            avif_speed: default_avif_speed(),
+            avif_subsample: default_avif_subsample(),
+            webp_near_lossless: default_webp_near_lossless(),
+            webp_sharp_yuv: false,
+            jpeg_trellis: default_jpeg_trellis(),
+            auto_quality: false,
+            auto_quality_score: default_auto_quality_score(),
+            generation_loss_protection: false,
+            result_cache: false,
+            skip_if_larger: false,
+            multi_candidate: false,
             overwrite: false,
             overwrite_mode: Some("skip".to_string()),
             file_name_template: Some("%name%".to_string()),

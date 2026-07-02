@@ -10,6 +10,8 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::external_codecs;
+
 const DEFAULT_THUMBNAIL_EDGE: u32 = 180;
 const MIN_THUMBNAIL_EDGE: u32 = 32;
 const MAX_THUMBNAIL_EDGE: u32 = 512;
@@ -42,7 +44,11 @@ pub fn generate_thumbnail(options: ThumbnailOptions) -> Result<Option<ThumbnailR
         return Ok(None);
     }
 
-    let source = fs::read(input).map_err(|e| format!("无法读取输入文件: {e}"))?;
+    let source = if external_codecs::is_heic_path(input) {
+        external_codecs::decode_heic_to_png(input)?
+    } else {
+        fs::read(input).map_err(|e| format!("无法读取输入文件: {e}"))?
+    };
     let max_edge = options
         .max_edge
         .unwrap_or(DEFAULT_THUMBNAIL_EDGE)

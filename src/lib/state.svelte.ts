@@ -1,12 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 ImgConvert contributors
 
-import {
-  Channel,
-  invoke,
-  isTauri as tauriIsTauri,
-} from "@tauri-apps/api/core";
-import { confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
+import { Channel, invoke, isTauri as tauriIsTauri } from "@tauri-apps/api/core";
+import { confirm as confirmDialog, open as openDialog } from "@tauri-apps/plugin-dialog";
 import { load, type Store } from "@tauri-apps/plugin-store";
 
 // ---- 类型 ----
@@ -17,6 +13,7 @@ export interface QueueItem {
   key: string;
   name: string;
   relativeDir: string | null;
+  temporary?: boolean;
   status: ItemStatus;
   detail: string;
   targetFormat: string | null;
@@ -31,6 +28,59 @@ export interface Capabilities {
   writable: string[];
   lossless: string[];
   heic: boolean;
+  codecProviders: CodecProvider[];
+}
+
+export interface CodecProvider {
+  id: string;
+  kind: string;
+  license: string | null;
+  readable: string[];
+  writable: string[];
+}
+export interface CodecDiagnostics {
+  heic: HeicCodecDiagnostics;
+}
+export interface HeicCodecDiagnostics {
+  enabled: boolean;
+  externalCodecsEnabled: boolean;
+  disabledReason: string | null;
+  extensions: string[];
+  activeProvider: CodecProviderDiagnostic | null;
+  selectedHelper: SelectedHelperDiagnostic;
+  manifestDirs: ManifestSearchDirDiagnostic[];
+  systemHelpers: SystemHelperDiagnostic[];
+}
+export interface CodecProviderDiagnostic extends CodecProvider {
+  command: string;
+  path: string;
+  args: string[];
+}
+export interface ManifestSearchDirDiagnostic {
+  source: string;
+  path: string;
+  status: string;
+  message: string | null;
+  manifests: ManifestDiagnostic[];
+}
+export interface ManifestDiagnostic {
+  path: string;
+  status: string;
+  message: string | null;
+  provider: CodecProviderDiagnostic | null;
+}
+export interface SystemHelperDiagnostic {
+  command: string;
+  available: boolean;
+  path: string | null;
+  message: string | null;
+}
+export interface SelectedHelperDiagnostic {
+  configured: boolean;
+  available: boolean;
+  path: string | null;
+  message: string | null;
+  provider: CodecProviderDiagnostic | null;
 }
 export interface ConvertResult {
   input: string;
@@ -47,6 +97,7 @@ export interface ImportScanFile {
   key: string;
   relativeDir: string | null;
   metadata: ImageMetadata | null;
+  temporary?: boolean;
 }
 export interface ImageMetadata {
   format: string;
@@ -83,6 +134,12 @@ export interface ThumbnailResult {
   height: number;
   bytes: number[] | Uint8Array;
 }
+export interface PickPathOptions {
+  directory?: boolean;
+  multiple?: boolean;
+  title?: string;
+  extensions?: string[];
+}
 export interface ConversionPlanEntry {
   index: number;
   input: string;
@@ -94,7 +151,24 @@ type ConvertRequest = {
   input: string;
   format: string;
   quality: number;
+  qualityFloor: number;
   lossless: boolean;
+  jpegProgressive: boolean;
+  pngOxipngLevel: number;
+  pngLossyQuantize: boolean;
+  pngQuantColors: number;
+  webpMethod: number;
+  avifSpeed: number;
+  avifSubsample: string;
+  webpNearLossless: number;
+  webpSharpYuv: boolean;
+  jpegTrellis: boolean;
+  autoQuality: boolean;
+  autoQualityScore: number;
+  generationLossProtection: boolean;
+  resultCache: boolean;
+  skipIfLarger: boolean;
+  multiCandidate: boolean;
   overwrite: boolean;
   overwriteMode: OverwriteMode;
   outDir: string | null;
@@ -132,13 +206,34 @@ type BatchJob = {
 };
 export type Theme = "light" | "dark" | "system";
 export type OverwriteMode = "ask" | "skip" | "overwrite";
+export type ImportMode = "scan" | "clipboard" | null;
 
 export interface Settings {
   format: string;
   quality: number;
+  jpegQualityFloor: number;
+  webpQualityFloor: number;
+  avifQualityFloor: number;
   lossless: boolean;
+  jpegProgressive: boolean;
+  pngOxipngLevel: number;
+  pngLossyQuantize: boolean;
+  pngQuantColors: number;
+  webpMethod: number;
+  avifSpeed: number;
+  avifSubsample: string;
+  webpNearLossless: number;
+  webpSharpYuv: boolean;
+  jpegTrellis: boolean;
+  autoQuality: boolean;
+  autoQualityScore: number;
+  generationLossProtection: boolean;
+  resultCache: boolean;
+  skipIfLarger: boolean;
+  multiCandidate: boolean;
   overwrite: OverwriteMode;
   outDir: string | null;
+  heicHelperPath: string | null;
   fileNameTemplate: string;
   preserveMetadata: boolean;
   concurrency: number;
@@ -152,6 +247,7 @@ const CORE_CAPABILITIES: Capabilities = {
   writable: ["jpeg", "png", "webp", "avif"],
   lossless: ["png", "webp"],
   heic: false,
+  codecProviders: [],
 };
 
 const FORMAT_EXTENSIONS: Record<string, string[]> = {
@@ -159,9 +255,13 @@ const FORMAT_EXTENSIONS: Record<string, string[]> = {
   png: ["png"],
   webp: ["webp"],
   avif: ["avif"],
+  heic: ["heic", "heif", "hif"],
 };
 const THUMBNAIL_MAX_EDGE = 180;
 const THUMBNAIL_CONCURRENCY = 2;
+const CLIPBOARD_MAX_BYTES = 128 * 1024 * 1024;
+const CLIPBOARD_IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/avif"]);
+let hostPlatformPromise: Promise<string> | null = null;
 
 export const FORMAT_CATEGORIES = [
   { value: "modern", label: "现代格式" },
@@ -199,6 +299,13 @@ export const FORMATS: {
     category: "standard",
     description: "无损图形与透明背景",
   },
+  {
+    value: "heic",
+    label: "HEIC",
+    category: "modern",
+    description: "可选插件导入,不作为输出格式",
+    note: "仅导入",
+  },
 ];
 
 export const IMAGE_EXTS = Object.values(FORMAT_EXTENSIONS).flat();
@@ -211,15 +318,58 @@ export function isTauriRuntime(): boolean {
 export const settings = $state<Settings>({
   format: "avif",
   quality: 80,
+  jpegQualityFloor: 30,
+  webpQualityFloor: 30,
+  avifQualityFloor: 30,
   lossless: false,
+  jpegProgressive: true,
+  pngOxipngLevel: 4,
+  pngLossyQuantize: false,
+  pngQuantColors: 256,
+  webpMethod: 4,
+  avifSpeed: 8,
+  avifSubsample: "yuv444",
+  webpNearLossless: 100,
+  webpSharpYuv: false,
+  jpegTrellis: true,
+  autoQuality: false,
+  autoQualityScore: 80,
+  generationLossProtection: true,
+  resultCache: true,
+  skipIfLarger: true,
+  multiCandidate: true,
   overwrite: "skip",
   outDir: null,
+  heicHelperPath: null,
   fileNameTemplate: "%name%",
   preserveMetadata: false,
   concurrency: 0,
   theme: "system",
   reduceMotion: false,
 });
+
+export function qualityFloorFor(format: string): number {
+  switch (format) {
+    case "jpeg":
+      return settings.jpegQualityFloor;
+    case "webp":
+      return settings.webpQualityFloor;
+    case "avif":
+      return settings.avifQualityFloor;
+    default:
+      return 0;
+  }
+}
+
+export function effectiveQualityFor(format: string, quality = settings.quality): number {
+  const requested = clampQuality(quality);
+  if (format === "png" || (settings.lossless && supportsLossless(format))) {
+    return requested;
+  }
+
+  const floor = normalizeQualityFloor(qualityFloorFor(format), 0);
+  return floor >= 30 ? Math.max(requested, floor) : requested;
+}
 
 export const queue = $state<QueueItem[]>([]);
 
@@ -228,6 +378,7 @@ interface UiState {
   cancelRequested: boolean;
   dragActive: boolean;
   importing: boolean;
+  importMode: ImportMode;
   importCancelRequested: boolean;
   importMessage: string;
   importErrors: ImportScanError[];
@@ -238,6 +389,7 @@ export const ui = $state<UiState>({
   cancelRequested: false,
   dragActive: false,
   importing: false,
+  importMode: null,
   importCancelRequested: false,
   importMessage: "",
   importErrors: [],
@@ -253,6 +405,7 @@ export const capabilities = $state<Capabilities>({
   writable: [...CORE_CAPABILITIES.writable],
   lossless: [...CORE_CAPABILITIES.lossless],
   heic: CORE_CAPABILITIES.heic,
+  codecProviders: [...CORE_CAPABILITIES.codecProviders],
 });
 
 // ---- 派生 ----
@@ -272,6 +425,67 @@ export function writableFormats() {
 export function readableExtensions(): string[] {
   const exts = capabilities.readable.flatMap((format) => FORMAT_EXTENSIONS[format] ?? []);
   return Array.from(new Set(exts));
+}
+
+export async function pickSystemPaths(options: PickPathOptions): Promise<string[]> {
+  if (!isTauriRuntime()) return [];
+
+  const platform = await hostPlatform();
+  if (platform !== "linux") {
+    return pickWithTauriDialog(options);
+  }
+
+  return invoke<string[]>("pick_paths", {
+    options: {
+      directory: options.directory ?? false,
+      multiple: options.multiple ?? false,
+      title: options.title ?? null,
+      extensions: options.extensions ?? [],
+    },
+  });
+}
+
+async function hostPlatform(): Promise<string> {
+  hostPlatformPromise ??= invoke<string>("host_platform").catch((error) => {
+    console.warn("读取宿主平台失败:", error);
+    return "unknown";
+  });
+  return hostPlatformPromise;
+}
+
+async function pickWithTauriDialog(options: PickPathOptions): Promise<string[]> {
+  const extensions = sanitizedDialogExtensions(options.extensions ?? []);
+  const selected = await openDialog({
+    directory: options.directory ?? false,
+    multiple: options.multiple ?? false,
+    title: options.title || undefined,
+    filters:
+      !options.directory && extensions.length
+        ? [
+            {
+              name: "图片",
+              extensions,
+            },
+          ]
+        : undefined,
+  });
+
+  if (selected === null) return [];
+  if (Array.isArray(selected)) {
+    return selected.filter((path) => path.trim().length > 0);
+  }
+  return selected.trim() ? [selected] : [];
+}
+
+function sanitizedDialogExtensions(extensions: string[]): string[] {
+  const sanitized = new Set<string>();
+  for (const extension of extensions) {
+    const normalized = extension.trim().replace(/^\.+/, "").toLowerCase();
+    if (normalized && /^[a-z0-9]+$/.test(normalized)) {
+      sanitized.add(normalized);
+    }
+  }
+  return [...sanitized];
 }
 
 export function formatFromExt(ext: string): string | null {
@@ -324,6 +538,12 @@ export function formatAccent(format: string | null): {
         border: "border-indigo-500/35",
         background: "bg-indigo-500/10",
       };
+    case "heic":
+      return {
+        text: "text-fuchsia-700 dark:text-fuchsia-300",
+        border: "border-fuchsia-500/35",
+        background: "bg-fuchsia-500/10",
+      };
     default:
       return {
         text: "text-primary",
@@ -334,8 +554,7 @@ export function formatAccent(format: string | null): {
 }
 
 // ---- 工具 ----
-export const extOf = (p: string) =>
-  p.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ?? "";
+export const extOf = (p: string) => p.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ?? "";
 export const baseName = (p: string) => p.split(/[\\/]/).pop() ?? p;
 export function fmtSize(b: number): string {
   if (b <= 0) return "0 B";
@@ -368,6 +587,11 @@ export interface AddPathsResult {
 }
 
 type AddPathInput = string | ImportScanFile;
+type ClipboardImageInput = {
+  blob: Blob;
+  mimeType: string;
+  suggestedName: string | null;
+};
 const thumbnailQueue: QueueItem[] = [];
 const thumbnailQueuedKeys = new Set<string>();
 let thumbnailActive = 0;
@@ -396,6 +620,7 @@ export function addPaths(paths: AddPathInput[]): AddPathsResult {
       key: candidate.key,
       name: baseName(candidate.path),
       relativeDir: candidate.relativeDir ?? null,
+      temporary: candidate.temporary,
       status: "pending",
       detail: "",
       targetFormat: null,
@@ -419,15 +644,20 @@ function normalizeAddPathInput(input: AddPathInput): ImportScanFile {
     key: input.key || input.path,
     relativeDir: input.relativeDir ?? null,
     metadata: input.metadata ?? null,
+    temporary: input.temporary,
   };
 }
 
 export async function importPaths(paths: string[]) {
   if (ui.converting || ui.importing || paths.length === 0) return;
+  await importPathList(paths, "正在扫描导入…");
+}
 
+async function importPathList(paths: string[], message: string) {
   ui.importing = true;
+  ui.importMode = "scan";
   ui.importCancelRequested = false;
-  ui.importMessage = "正在扫描导入…";
+  ui.importMessage = message;
   ui.importErrors = [];
   try {
     if (!isTauriRuntime()) {
@@ -455,16 +685,288 @@ export async function importPaths(paths: string[]) {
     ui.importErrors = [];
   } finally {
     ui.importing = false;
+    ui.importMode = null;
     ui.importCancelRequested = false;
   }
+}
+
+export async function importClipboard() {
+  if (ui.converting || ui.importing) return;
+
+  if (!isTauriRuntime()) {
+    ui.importMessage = "网页预览无法读取系统剪贴板,请在 Tauri 桌面端使用";
+    return;
+  }
+
+  const clipboard = navigator.clipboard as
+    | {
+        read?: () => Promise<ClipboardItem[]>;
+        readText?: () => Promise<string>;
+      }
+    | undefined;
+  if (!clipboard) {
+    ui.importMessage = "当前 WebView 不支持读取剪贴板";
+    return;
+  }
+
+  let readError: unknown = null;
+  try {
+    const read = clipboard.read;
+    const images =
+      typeof read === "function" ? await readClipboardImages(read.bind(clipboard)) : [];
+    if (images.length) {
+      await importClipboardImages(images);
+      return;
+    }
+  } catch (error) {
+    readError = error;
+  }
+
+  try {
+    const text = clipboard.readText ? await clipboard.readText() : "";
+    const paths = parseClipboardPaths(text);
+    if (paths.length) {
+      await importPathList(paths, "正在扫描剪贴板路径…");
+      return;
+    }
+  } catch (error) {
+    readError ??= error;
+  }
+
+  ui.importMessage = readError
+    ? `读取剪贴板失败:${String(readError)}`
+    : "剪贴板中没有可导入的图片或本机路径";
+}
+
+export async function importPastedClipboard(event: ClipboardEvent) {
+  if (ui.converting || ui.importing) return;
+  const data = event.clipboardData;
+  if (!data) return;
+
+  const images = imagesFromClipboardData(data);
+  if (images.length) {
+    event.preventDefault();
+    await importClipboardImages(images);
+    return;
+  }
+
+  if (isEditablePasteTarget(event.target)) {
+    return;
+  }
+
+  const paths = parseClipboardPaths(textFromClipboardData(data));
+  if (!paths.length) return;
+
+  event.preventDefault();
+  await importPathList(paths, "正在扫描剪贴板路径…");
+}
+
+async function readClipboardImages(
+  read: () => Promise<ClipboardItem[]>,
+): Promise<ClipboardImageInput[]> {
+  const images: ClipboardImageInput[] = [];
+  const items = await read();
+  for (const item of items) {
+    const mimeType = item.types.find(isSupportedClipboardImageMime);
+    if (!mimeType) continue;
+    const blob = await item.getType(mimeType);
+    images.push({ blob, mimeType, suggestedName: null });
+  }
+  return images;
+}
+
+function imagesFromClipboardData(data: DataTransfer): ClipboardImageInput[] {
+  const files = new Map<string, File>();
+  for (const file of Array.from(data.files)) {
+    if (isSupportedClipboardImageFile(file)) {
+      files.set(clipboardFileKey(file), file);
+    }
+  }
+  for (const item of Array.from(data.items)) {
+    if (item.kind !== "file") continue;
+    const file = item.getAsFile();
+    if (!file || !isSupportedClipboardImageFile(file)) continue;
+    files.set(clipboardFileKey(file), file);
+  }
+
+  return Array.from(files.values()).map((file) => ({
+    blob: file,
+    mimeType: normalizedMimeType(file.type),
+    suggestedName: file.name || null,
+  }));
+}
+
+async function importClipboardImages(images: ClipboardImageInput[]) {
+  if (ui.converting || ui.importing || images.length === 0) return;
+
+  ui.importing = true;
+  ui.importMode = "clipboard";
+  ui.importCancelRequested = false;
+  ui.importMessage = "正在导入剪贴板图片…";
+  ui.importErrors = [];
+
+  let skipped = 0;
+  const files: ImportScanFile[] = [];
+  try {
+    for (const image of images) {
+      if (ui.importCancelRequested) break;
+      try {
+        if (image.blob.size > CLIPBOARD_MAX_BYTES) {
+          skipped += 1;
+          ui.importErrors.push({
+            path: image.suggestedName ?? "clipboard",
+            message: `剪贴板图片超过上限 ${fmtSize(CLIPBOARD_MAX_BYTES)}`,
+          });
+          continue;
+        }
+
+        const bytes = new Uint8Array(await image.blob.arrayBuffer());
+        if (ui.importCancelRequested) break;
+        if (bytes.byteLength > CLIPBOARD_MAX_BYTES) {
+          skipped += 1;
+          ui.importErrors.push({
+            path: image.suggestedName ?? "clipboard",
+            message: `剪贴板图片超过上限 ${fmtSize(CLIPBOARD_MAX_BYTES)}`,
+          });
+          continue;
+        }
+
+        const file = await invoke<ImportScanFile>("import_clipboard_image", {
+          options: {
+            bytes,
+            mimeType: image.mimeType || null,
+            suggestedName: image.suggestedName,
+          },
+        });
+        files.push({ ...file, temporary: true });
+        if (ui.importCancelRequested) break;
+      } catch (error) {
+        skipped += 1;
+        ui.importErrors.push({
+          path: image.suggestedName ?? "clipboard",
+          message: String(error),
+        });
+      }
+    }
+
+    if (ui.importCancelRequested) {
+      for (const file of files) {
+        cleanupTemporaryPath(file.path);
+      }
+      ui.importMessage = "已取消剪贴板导入";
+      return;
+    }
+
+    const beforeKeys = new Set(queue.map((item) => item.key));
+    const added = addPaths(files);
+    const afterKeys = new Set(queue.map((item) => item.key));
+    for (const file of files) {
+      if (beforeKeys.has(file.key) || !afterKeys.has(file.key)) {
+        cleanupTemporaryPath(file.path);
+      }
+    }
+    ui.importMessage = formatImportSummary({ ...added, skipped: added.skipped + skipped }, null);
+  } catch (error) {
+    ui.importMessage = `剪贴板导入失败:${String(error)}`;
+  } finally {
+    ui.importing = false;
+    ui.importMode = null;
+    ui.importCancelRequested = false;
+  }
+}
+
+function isSupportedClipboardImageFile(file: File): boolean {
+  if (isSupportedClipboardImageMime(file.type)) return true;
+  const format = formatFromExt(extOf(file.name));
+  return !!format && capabilities.readable.includes(format) && format !== "heic";
+}
+
+function clipboardFileKey(file: File): string {
+  return `${file.name}:${file.type}:${file.size}:${file.lastModified}`;
+}
+
+function isSupportedClipboardImageMime(mimeType: string): boolean {
+  const normalized = normalizedMimeType(mimeType);
+  return CLIPBOARD_IMAGE_MIME_TYPES.has(normalized);
+}
+
+function normalizedMimeType(mimeType: string): string {
+  return mimeType.split(";")[0]?.trim().toLowerCase() ?? "";
+}
+
+function textFromClipboardData(data: DataTransfer): string {
+  return [
+    readClipboardData(data, "x-special/gnome-copied-files"),
+    readClipboardData(data, "text/uri-list"),
+    readClipboardData(data, "text/plain"),
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function readClipboardData(data: DataTransfer, type: string): string {
+  try {
+    return data.getData(type);
+  } catch {
+    return "";
+  }
+}
+
+function parseClipboardPaths(text: string): string[] {
+  const paths = new Set<string>();
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#") || line === "copy" || line === "cut") continue;
+
+    const fileUrlPath = fileUrlToPath(line);
+    if (fileUrlPath) {
+      paths.add(fileUrlPath);
+      continue;
+    }
+    if (looksLikeAbsolutePath(line)) {
+      paths.add(line);
+    }
+  }
+  return [...paths];
+}
+
+function fileUrlToPath(value: string): string | null {
+  if (!value.toLowerCase().startsWith("file:")) return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "file:") return null;
+    let path = decodeURIComponent(url.pathname);
+    if (/^\/[a-zA-Z]:\//.test(path)) {
+      path = path.slice(1);
+    }
+    return path || null;
+  } catch {
+    return null;
+  }
+}
+
+function looksLikeAbsolutePath(value: string): boolean {
+  return value.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(value) || value.startsWith("\\\\");
+}
+
+function isEditablePasteTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement;
 }
 
 export async function cancelImportScan() {
   if (!ui.importing || ui.importCancelRequested) return;
   ui.importCancelRequested = true;
 
+  if (ui.importMode === "clipboard") {
+    ui.importMessage = "正在取消剪贴板导入…";
+    return;
+  }
+
   if (!isTauriRuntime()) {
     ui.importing = false;
+    ui.importMode = null;
     ui.importMessage = "已取消导入扫描";
     return;
   }
@@ -546,6 +1048,7 @@ export function removeItem(path: string) {
   if (i >= 0) {
     disposeThumbnail(queue[i]);
     removeQueuedThumbnail(queue[i]);
+    cleanupTemporaryImport(queue[i]);
     queue.splice(i, 1);
   }
 }
@@ -553,9 +1056,22 @@ export function clearQueue() {
   if (ui.converting || ui.importing) return;
   for (const item of queue) {
     disposeThumbnail(item);
+    cleanupTemporaryImport(item);
   }
   resetThumbnailQueue();
   queue.splice(0, queue.length);
+}
+
+function cleanupTemporaryImport(item: QueueItem) {
+  if (!item.temporary || !isTauriRuntime()) return;
+  cleanupTemporaryPath(item.path);
+}
+
+function cleanupTemporaryPath(path: string) {
+  if (!isTauriRuntime()) return;
+  void invoke<boolean>("cleanup_imported_temp_file", { path }).catch((error) => {
+    console.warn("清理剪贴板临时文件失败:", error);
+  });
 }
 
 // ---- 缩略图 ----
@@ -795,7 +1311,24 @@ function buildConvertRequest(item: QueueItem, format: string): ConvertRequest {
     input: item.path,
     format,
     quality: settings.quality,
+    qualityFloor: qualityFloorFor(format),
     lossless: settings.lossless && supportsLossless(format),
+    jpegProgressive: settings.jpegProgressive,
+    pngOxipngLevel: settings.pngOxipngLevel,
+    pngLossyQuantize: settings.pngLossyQuantize,
+    pngQuantColors: settings.pngQuantColors,
+    webpMethod: settings.webpMethod,
+    avifSpeed: settings.avifSpeed,
+    avifSubsample: settings.avifSubsample,
+    webpNearLossless: settings.webpNearLossless,
+    webpSharpYuv: settings.webpSharpYuv,
+    jpegTrellis: settings.jpegTrellis,
+    autoQuality: settings.autoQuality,
+    autoQualityScore: settings.autoQualityScore,
+    generationLossProtection: settings.generationLossProtection,
+    resultCache: settings.resultCache,
+    skipIfLarger: settings.skipIfLarger,
+    multiCandidate: settings.multiCandidate,
     overwrite: settings.overwrite === "overwrite",
     overwriteMode: settings.overwrite,
     outDir: settings.outDir,
@@ -803,7 +1336,7 @@ function buildConvertRequest(item: QueueItem, format: string): ConvertRequest {
     sourceWidth: item.metadata?.width ?? null,
     sourceHeight: item.metadata?.height ?? null,
     fileNameTemplate: settings.fileNameTemplate,
-    preserveMetadata: false,
+    preserveMetadata: settings.preserveMetadata,
   };
 }
 
@@ -879,7 +1412,8 @@ function formatResultDetail(res: ConvertResult): string {
 }
 
 function formatSkipDetail(message: string): string {
-  return message.includes("已存在") ? "已跳过(输出已存在)" : `已跳过:${message}`;
+  if (message.includes("已存在")) return "已跳过(输出已存在)";
+  return `已跳过:${message}`;
 }
 
 function formatAskOverwriteMessage(entry: ConversionPlanEntry): string {
@@ -893,24 +1427,39 @@ export async function checkEngine() {
     capabilities.writable = [...CORE_CAPABILITIES.writable];
     capabilities.lossless = [...CORE_CAPABILITIES.lossless];
     capabilities.heic = CORE_CAPABILITIES.heic;
+    capabilities.codecProviders = [...CORE_CAPABILITIES.codecProviders];
     engine.text = `网页预览 · ${capabilities.writable.map(formatLabel).join(" / ")}`;
     engine.ok = true;
     return;
   }
 
   try {
+    await syncSelectedHeicHelper();
     const info = await invoke<Capabilities>("capabilities");
     capabilities.readable = [...info.readable];
     capabilities.writable = [...info.writable];
     capabilities.lossless = [...info.lossless];
     capabilities.heic = info.heic;
+    capabilities.codecProviders = [...(info.codecProviders ?? [])];
 
     if (!capabilities.writable.includes(settings.format)) {
       settings.format = capabilities.writable[0] ?? CORE_CAPABILITIES.writable[0];
       await persistSettings();
     }
 
-    engine.text = `Core 就绪 · ${capabilities.writable.map(formatLabel).join(" / ")}`;
+    const heicProvider = capabilities.codecProviders.find((provider) =>
+      provider.readable.includes("heic"),
+    );
+    const heicProviderText =
+      heicProvider?.kind === "manifest"
+        ? "插件"
+        : heicProvider?.kind === "system-helper"
+          ? "系统 helper"
+          : heicProvider?.kind === "selected-helper"
+            ? "手动 helper"
+            : "可选 helper";
+    const heicText = capabilities.heic ? ` · HEIC 可选导入(${heicProviderText})` : "";
+    engine.text = `Core 就绪 · ${capabilities.writable.map(formatLabel).join(" / ")}${heicText}`;
     engine.ok = capabilities.writable.length > 0;
   } catch (e) {
     engine.text = `Core 能力检测失败:${e}`;
@@ -918,12 +1467,69 @@ export async function checkEngine() {
   }
 }
 
+export async function loadCodecDiagnostics(): Promise<CodecDiagnostics> {
+  if (!isTauriRuntime()) {
+    return {
+      heic: {
+        enabled: false,
+        externalCodecsEnabled: false,
+        disabledReason: null,
+        extensions: ["heic", "heif", "hif"],
+        activeProvider: null,
+        selectedHelper: {
+          configured: false,
+          available: false,
+          path: null,
+          message: null,
+          provider: null,
+        },
+        manifestDirs: [],
+        systemHelpers: [],
+      },
+    };
+  }
+
+  return invoke<CodecDiagnostics>("codec_diagnostics");
+}
+
+export async function setSelectedHeicHelperPath(
+  path: string | null,
+): Promise<SelectedHelperDiagnostic> {
+  if (!isTauriRuntime()) {
+    return {
+      configured: false,
+      available: false,
+      path: null,
+      message: "网页预览环境不配置本机 helper",
+      provider: null,
+    };
+  }
+
+  const diagnostic = await invoke<SelectedHelperDiagnostic>("set_selected_heic_helper", {
+    path,
+  });
+  settings.heicHelperPath = diagnostic.provider?.path ?? diagnostic.path ?? null;
+  await persistSettings();
+  await checkEngine();
+  return diagnostic;
+}
+
+async function syncSelectedHeicHelper() {
+  if (!isTauriRuntime()) return;
+  try {
+    await invoke<SelectedHelperDiagnostic>("set_selected_heic_helper", {
+      path: settings.heicHelperPath,
+    });
+  } catch (error) {
+    console.warn("同步 HEIC helper 白名单失败:", error);
+  }
+}
+
 // ---- 主题 ----
 export function applyTheme() {
   const dark =
     settings.theme === "dark" ||
-    (settings.theme === "system" &&
-      window.matchMedia("(prefers-color-scheme: dark)").matches);
+    (settings.theme === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
   document.documentElement.classList.toggle("dark", dark);
   document.documentElement.classList.toggle("reduce-motion", settings.reduceMotion);
 }
@@ -968,10 +1574,15 @@ function normalizeSettings() {
   if (settings.outDir !== null && typeof settings.outDir !== "string") {
     settings.outDir = null;
   }
+  if (settings.heicHelperPath !== null && typeof settings.heicHelperPath !== "string") {
+    settings.heicHelperPath = null;
+  }
   if (typeof settings.fileNameTemplate !== "string" || !settings.fileNameTemplate.trim()) {
     settings.fileNameTemplate = "%name%";
   }
-  settings.preserveMetadata = false;
+  if (typeof settings.preserveMetadata !== "boolean") {
+    settings.preserveMetadata = false;
+  }
   if (typeof settings.concurrency !== "number" || !Number.isFinite(settings.concurrency)) {
     settings.concurrency = 0;
   } else {
@@ -980,12 +1591,93 @@ function normalizeSettings() {
   if (typeof settings.lossless !== "boolean") {
     settings.lossless = false;
   }
+  if (typeof settings.jpegProgressive !== "boolean") {
+    settings.jpegProgressive = true;
+  }
+  if (typeof settings.pngOxipngLevel !== "number" || !Number.isFinite(settings.pngOxipngLevel)) {
+    settings.pngOxipngLevel = 4;
+  } else {
+    settings.pngOxipngLevel = Math.min(6, Math.max(0, Math.round(settings.pngOxipngLevel)));
+  }
+  if (typeof settings.pngLossyQuantize !== "boolean") {
+    settings.pngLossyQuantize = false;
+  }
+  if (typeof settings.pngQuantColors !== "number" || !Number.isFinite(settings.pngQuantColors)) {
+    settings.pngQuantColors = 256;
+  } else {
+    settings.pngQuantColors = Math.min(256, Math.max(64, Math.round(settings.pngQuantColors)));
+  }
+  if (typeof settings.webpMethod !== "number" || !Number.isFinite(settings.webpMethod)) {
+    settings.webpMethod = 4;
+  } else {
+    settings.webpMethod = Math.min(6, Math.max(0, Math.round(settings.webpMethod)));
+  }
+  if (typeof settings.avifSpeed !== "number" || !Number.isFinite(settings.avifSpeed)) {
+    settings.avifSpeed = 8;
+  } else {
+    settings.avifSpeed = Math.min(10, Math.max(0, Math.round(settings.avifSpeed)));
+  }
+  if (settings.avifSubsample !== "yuv420" && settings.avifSubsample !== "yuv444") {
+    settings.avifSubsample = "yuv444";
+  }
+  if (
+    typeof settings.webpNearLossless !== "number" ||
+    !Number.isFinite(settings.webpNearLossless)
+  ) {
+    settings.webpNearLossless = 100;
+  } else {
+    settings.webpNearLossless = Math.min(100, Math.max(0, Math.round(settings.webpNearLossless)));
+  }
+  if (typeof settings.webpSharpYuv !== "boolean") {
+    settings.webpSharpYuv = false;
+  }
+  if (typeof settings.jpegTrellis !== "boolean") {
+    settings.jpegTrellis = true;
+  }
+  if (typeof settings.autoQuality !== "boolean") {
+    settings.autoQuality = false;
+  }
+  if (
+    typeof settings.autoQualityScore !== "number" ||
+    !Number.isFinite(settings.autoQualityScore)
+  ) {
+    settings.autoQualityScore = 80;
+  } else {
+    settings.autoQualityScore = Math.min(95, Math.max(50, Math.round(settings.autoQualityScore)));
+  }
+  if (typeof settings.generationLossProtection !== "boolean") {
+    settings.generationLossProtection = true;
+  }
+  if (typeof settings.resultCache !== "boolean") {
+    settings.resultCache = true;
+  }
+  if (typeof settings.skipIfLarger !== "boolean") {
+    settings.skipIfLarger = true;
+  }
+  if (typeof settings.multiCandidate !== "boolean") {
+    settings.multiCandidate = true;
+  }
   if (typeof settings.reduceMotion !== "boolean") {
     settings.reduceMotion = false;
   }
-  if (typeof settings.quality !== "number" || !Number.isFinite(settings.quality)) {
-    settings.quality = 80;
-  } else {
-    settings.quality = Math.min(100, Math.max(1, Math.round(settings.quality)));
+  settings.quality = clampQuality(settings.quality);
+  settings.jpegQualityFloor = normalizeQualityFloor(settings.jpegQualityFloor, 30);
+  settings.webpQualityFloor = normalizeQualityFloor(settings.webpQualityFloor, 30);
+  settings.avifQualityFloor = normalizeQualityFloor(settings.avifQualityFloor, 30);
+}
+
+function clampQuality(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return 80;
   }
+  return Math.min(100, Math.max(1, Math.round(value)));
+}
+
+function normalizeQualityFloor(value: unknown, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return fallback;
+  }
+
+  const rounded = Math.min(100, Math.max(0, Math.round(value)));
+  return rounded < 30 ? 0 : rounded;
 }

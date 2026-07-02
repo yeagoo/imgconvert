@@ -1,13 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { execFileSync } from "node:child_process";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -41,9 +35,7 @@ function findLicenseFiles(packagePath) {
   return readdirSync(packagePath, { withFileTypes: true })
     .filter((entry) => entry.isFile())
     .map((entry) => entry.name)
-    .filter((name) =>
-      /^(?:license|licence|copying|notice|unlicense)(?:[._-].*)?$/i.test(name),
-    )
+    .filter((name) => /^(?:license|licence|copying|notice|unlicense)(?:[._-].*)?$/i.test(name))
     .sort((a, b) => a.localeCompare(b));
 }
 
@@ -57,9 +49,7 @@ function normalizeLicenseText(text) {
 }
 
 function renderNpmLicenses() {
-  const licenseGroups = JSON.parse(
-    run("pnpm", ["licenses", "list", "--json"], { cwd: root }),
-  );
+  const licenseGroups = JSON.parse(run("pnpm", ["licenses", "list", "--json"], { cwd: root }));
   const packages = [];
 
   for (const [detectedLicense, entries] of Object.entries(licenseGroups)) {
@@ -73,7 +63,8 @@ function renderNpmLicenses() {
           (entry.versions?.length === 1 ? entry.versions[0] : entry.versions?.join(", ")) ??
           "unknown";
         const license = formatLicense(packageJson.license, entry.license ?? detectedLicense);
-        const homepage = packageJson.homepage ?? entry.homepage ?? packageJson.repository?.url ?? "";
+        const homepage =
+          packageJson.homepage ?? entry.homepage ?? packageJson.repository?.url ?? "";
         const licenseFiles = findLicenseFiles(packagePath).map((fileName) => ({
           name: fileName,
           text: normalizeLicenseText(readFileSync(resolve(packagePath, fileName), "utf8")),
@@ -134,15 +125,7 @@ ${texts}`;
 
 const rustLicenses = run(
   "cargo",
-  [
-    "about",
-    "generate",
-    "about.hbs",
-    "--manifest-path",
-    "Cargo.toml",
-    "--locked",
-    "--fail",
-  ],
+  ["about", "generate", "about.hbs", "--manifest-path", "Cargo.toml", "--locked", "--fail"],
   { cwd: resolve(root, "src-tauri") },
 );
 const npmLicenses = renderNpmLicenses();

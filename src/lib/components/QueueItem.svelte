@@ -1,13 +1,7 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 <script lang="ts">
   import { onMount } from "svelte";
-  import {
-    ArrowsClockwise,
-    CheckCircle,
-    Image,
-    WarningCircle,
-    X,
-  } from "phosphor-svelte";
+  import { ArrowsClockwise, CheckCircle, Image, WarningCircle, X } from "phosphor-svelte";
   import FormatSelect from "$lib/components/FormatSelect.svelte";
   import {
     extOf,
@@ -80,14 +74,11 @@
   <div
     class="flex h-full min-h-32 flex-col justify-between rounded-md border p-2 {sourceAccent.border} {sourceAccent.background}"
   >
-    <div class="relative flex h-20 items-center justify-center overflow-hidden rounded bg-background/65">
+    <div
+      class="relative flex h-20 items-center justify-center overflow-hidden rounded bg-background/65"
+    >
       {#if item.thumbnailStatus === "ready" && item.thumbnail}
-        <img
-          src={item.thumbnail.url}
-          alt=""
-          class="h-full w-full object-cover"
-          draggable="false"
-        />
+        <img src={item.thumbnail.url} alt="" class="h-full w-full object-cover" draggable="false" />
       {:else if item.thumbnailStatus === "loading"}
         <ArrowsClockwise size={22} class="animate-spin {sourceAccent.text}" />
       {:else}
@@ -160,7 +151,9 @@
     <div class="min-h-8">
       {#if item.detail}
         <div
-          class="line-clamp-2 text-xs {item.status === 'error' ? 'text-destructive' : 'text-muted-foreground'}"
+          class="line-clamp-2 text-xs {item.status === 'error'
+            ? 'text-destructive'
+            : 'text-muted-foreground'}"
         >
           {item.detail}
         </div>
