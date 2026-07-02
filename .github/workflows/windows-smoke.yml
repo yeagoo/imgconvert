@@ -46,7 +46,23 @@ jobs:
 
       - name: Install native codec build tools
         shell: pwsh
-        run: choco install -y cmake meson ninja nasm
+        run: |
+          choco install -y cmake meson ninja nasm
+          $toolPaths = @(
+            "C:\ProgramData\chocolatey\bin",
+            "C:\Program Files\Meson",
+            "C:\Program Files\NASM"
+          )
+          foreach ($toolPath in $toolPaths) {
+            if (Test-Path $toolPath) {
+              Add-Content -Path $env:GITHUB_PATH -Value $toolPath
+              $env:Path = "$toolPath;$env:Path"
+            }
+          }
+          cmake --version
+          meson --version
+          ninja --version
+          nasm -v
 
       - uses: pnpm/action-setup@v4
         with:
