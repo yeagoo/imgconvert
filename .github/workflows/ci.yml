@@ -35,7 +35,7 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
       - uses: dtolnay/rust-toolchain@1.96.0
       - run: pnpm install --frozen-lockfile
-      - run: cargo install cargo-about --locked
+      - run: cargo install cargo-about --locked --features cli
       - run: pnpm run quality:frontend
       - run: pnpm run license:npm
       - run: pnpm run license:verify
@@ -116,7 +116,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: cargo install cargo-deny --version 0.19.9 --locked
       - run: cargo install cargo-audit --locked
-      - run: cargo install cargo-about --locked
+      - run: cargo install cargo-about --locked --features cli
       - run: pnpm run license:check
       - run: cd src-tauri && cargo deny check bans sources advisories
       - run: cd src-tauri && cargo audit
