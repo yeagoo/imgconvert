@@ -1,0 +1,104 @@
+name: macOS Smoke
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      heic_smoke:
+        description: Generate a small HEIC fixture with macOS sips and run ImageIO import smoke.
+        required: true
+        default: false
+        type: boolean
+      build_direct:
+        description: Build an unsigned direct DMG candidate.
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+  NODE_VERSION: "24"
+
+jobs:
+  macos-smoke:
+    name: macOS Smoke (arm64)
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.4
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          components: rustfmt, clippy
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Frontend typecheck
+        run: pnpm run typecheck
+
+      - name: macOS release guardrails
+        run: pnpm run release:macos:check
+
+      - name: Tauri backend macOS fmt
+        run: cargo +1.96.0 fmt --manifest-path src-tauri/Cargo.toml --check
+
+      - name: Tauri backend macOS clippy
+        run: cargo +1.96.0 clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      - name: Tauri backend macOS tests
+        run: cargo +1.96.0 test --manifest-path src-tauri/Cargo.toml
+
+      - name: Generate optional HEIC fixture
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.heic_smoke }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/imgconvert-macos-heic"
+          IMGCONVERT_PACKAGE_CONVERT_SMOKE=1 \
+          IMGCONVERT_PACKAGE_CONVERT_SMOKE_FORMATS=png \
+          IMGCONVERT_PACKAGE_CONVERT_SMOKE_DIR="$RUNNER_TEMP/imgconvert-macos-heic" \
+          cargo +1.96.0 run --manifest-path src-tauri/Cargo.toml --bin imgconvert
+          sips -s format heic \
+            "$RUNNER_TEMP/imgconvert-macos-heic/smoke.png" \
+            --out "$RUNNER_TEMP/imgconvert-macos-heic/smoke.heic"
+
+      - name: macOS runtime smoke
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.heic_smoke }}
+        run: pnpm run release:macos:smoke
+
+      - name: macOS runtime smoke with HEIC fixture
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.heic_smoke }}
+        env:
+          IMGCONVERT_MACOS_HEIC_SMOKE_INPUT: ${{ runner.temp }}/imgconvert-macos-heic/smoke.heic
+        run: pnpm run release:macos:smoke
+
+      - name: Optional direct DMG build
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_direct }}
+        run: pnpm tauri build --ci --bundles dmg
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_direct }}
+        with:
+          name: imgconvert-macos-arm64-dmg
+          if-no-files-found: error
+          retention-days: 14
+          path: src-tauri/target/release/bundle/dmg/*.dmg

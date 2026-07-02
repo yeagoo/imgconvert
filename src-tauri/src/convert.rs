@@ -403,7 +403,7 @@ fn parse_format(format: &str) -> Result<Format, String> {
         "png" => Ok(Format::Png),
         "webp" => Ok(Format::WebP),
         "avif" => Ok(Format::Avif),
-        "heic" | "heif" => Err("HEIC 在 Linux v1 暂不支持".to_string()),
+        "heic" | "heif" => Err("HEIC 输出暂未启用;当前仅作为可选导入格式".to_string()),
         "tiff" | "tif" => Err("TIFF 暂未纳入 v1 可写格式".to_string()),
         other => Err(format!("不支持的目标格式: {other}")),
     }
@@ -657,6 +657,7 @@ fn cleanup_partial_note(path: &Path) -> String {
 /// 执行一次转换。
 pub fn convert(opts: &ConvertOptions) -> Result<ConvertResult, String> {
     let input = Path::new(&opts.input);
+    let _input_scope = access::scoped_path_access(input);
     let input_metadata = fs::metadata(input).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             format!("输入文件不存在: {}", input.display())
@@ -668,7 +669,10 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertResult, String> {
         return Err(format!("输入路径不是文件: {}", input.display()));
     }
 
+    let _output_dir_scope =
+        access::output_directory(opts.out_dir.as_deref()).map(|grant| grant.scoped_access());
     let out = output_path(opts)?;
+    let _output_scope = out.parent().map(access::scoped_path_access);
     let source_modified = input_metadata.modified().ok();
     let overwrite_mode = match opts.overwrite_mode.as_deref() {
         Some(mode @ ("ask" | "skip" | "overwrite")) => mode,
@@ -887,6 +891,44 @@ fn read_source_for_core(input: &Path) -> Result<Vec<u8>, String> {
         return external_codecs::decode_heic_to_png(input);
     }
     fs::read(input).map_err(|e| format!("无法读取输入文件 {}: {e}", input.display()))
+}
+
+pub fn path_conversion_smoke_options(
+    input: String,
+    out_dir: Option<String>,
+    format: String,
+) -> ConvertOptions {
+    ConvertOptions {
+        input,
+        out_dir,
+        relative_dir: None,
+        source_width: None,
+        source_height: None,
+        format,
+        quality: 82,
+        quality_floor: 0,
+        lossless: false,
+        jpeg_progressive: default_jpeg_progressive(),
+        png_oxipng_level: default_png_oxipng_level(),
+        png_lossy_quantize: false,
+        png_quant_colors: default_png_quant_colors(),
+        webp_method: default_webp_method(),
+        avif_speed: 10,
+        avif_subsample: default_avif_subsample(),
+        webp_near_lossless: default_webp_near_lossless(),
+        webp_sharp_yuv: false,
+        jpeg_trellis: default_jpeg_trellis(),
+        auto_quality: false,
+        auto_quality_score: default_auto_quality_score(),
+        generation_loss_protection: false,
+        result_cache: false,
+        skip_if_larger: false,
+        multi_candidate: false,
+        overwrite: true,
+        overwrite_mode: Some("overwrite".to_string()),
+        file_name_template: Some("%name%-imgconvert-smoke".to_string()),
+        preserve_metadata: Some(false),
+    }
 }
 
 fn set_modified_time(path: &Path, modified: SystemTime) -> Result<(), String> {
@@ -2502,6 +2544,28 @@ mod tests {
         assert!(delta < std::time::Duration::from_secs(2));
 
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn path_conversion_smoke_options_use_stable_overwrite_defaults() {
+        let options = path_conversion_smoke_options(
+            "/tmp/input.heic".to_string(),
+            Some("/tmp/out".to_string()),
+            "png".to_string(),
+        );
+
+        assert_eq!(options.input, "/tmp/input.heic");
+        assert_eq!(options.out_dir.as_deref(), Some("/tmp/out"));
+        assert_eq!(options.format, "png");
+        assert_eq!(options.overwrite_mode.as_deref(), Some("overwrite"));
+        assert_eq!(
+            options.file_name_template.as_deref(),
+            Some("%name%-imgconvert-smoke")
+        );
+        assert!(!options.skip_if_larger);
+        assert!(!options.result_cache);
+        assert!(!options.multi_candidate);
+        assert_eq!(options.preserve_metadata, Some(false));
     }
 
     #[test]

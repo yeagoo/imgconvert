@@ -5,6 +5,33 @@
 
 ---
 
+## 2026-07-03 — macOS 阶段第一批:ImageIO HEIC 导入、security scope 钩子与 AVIF benchmark
+
+Codex 启动 macOS 阶段开发,先落地可在当前仓库合入且不会污染主依赖树的第一批:
+
+- **macOS ImageIO HEIC read-only provider**:新增 `src-tauri/src/macos_system_codecs.rs`,macOS 下通过系统 `ImageIO.framework` 把 HEIC/HEIF 转码为 PNG 字节再进入现有 core 管线。该 provider 以 `system-imageio` 暴露到 `capabilities().codecProviders`,只加入 readable,不加入 writable;不链接 libheif、不捆绑 x265、不启用 HEIC 输出。
+- **诊断/前端同步**:插件诊断 UI 与引擎文案识别 `system-imageio`,macOS 显示为系统 ImageIO,不再误归类为外部 helper。`IMGCONVERT_DISABLE_EXTERNAL_CODECS=1` 仍只禁外部 helper/manifest,不禁系统 ImageIO。
+- **security-scoped resource RAII 钩子**:新增 `src-tauri/src/macos_security.rs`,通过 `CFURLStartAccessingSecurityScopedResource` / `CFURLStopAccessingSecurityScopedResource` 包住用户授权路径生命周期。导入扫描和单次转换读写路径已接入 `access::scoped_path_access()`;Linux/Windows 为 no-op。
+- **Apple Silicon AVIF benchmark 入口**:新增隐藏二进制入口 `IMGCONVERT_AVIF_BENCHMARK=1` 与 `pnpm run bench:avif:macos`,用于在 M 系列上实测 rav1e speed 8/10。该结果后续用于复核 macOS 默认 AVIF speed。
+- **review 修复**:ImageIO HEIC decode 从整文件 `CFData` 输入改为 `CGImageSourceCreateWithURL`,只读取前 64 bytes 做 HEIF magic 校验,降低大 HEIC 文件的输入内存峰值;benchmark 增加像素/迭代预算,避免环境变量误设触发超大 RGBA 分配;导入扫描恢复旧的根路径入栈顺序,同时保留 security scope 生命周期。
+- **macOS runtime smoke 聚合**:新增隐藏 `IMGCONVERT_PATH_CONVERT_SMOKE=1` 路径转换 smoke 和 `pnpm run release:macos:smoke`。macOS 真机可通过 `IMGCONVERT_MACOS_HEIC_SMOKE_INPUT=/path/to/sample.heic pnpm run release:macos:smoke` 验证 ImageIO HEIC 样张走完整 `convert()` 管线,也可加 `--build-direct` 或 `--notarize-dmg` 覆盖打包/公证路径。
+- **macOS release guardrail 加固**:`release:macos:check` 现在校验 ImageIO bridge、read-only HEIC provider、security scope start/stop shim、benchmark 脚本和 macOS README 关键发布步骤。
+
+限制:
+
+- 当前 Linux 开发机无法执行真实 ImageIO/MAS sandbox/notarytool smoke;`cargo +1.96.0 check --target aarch64-apple-darwin` 已尝试,但停在 Linux 本机 `cc` 不支持 `objc2-exception-helper` 需要的 `-arch arm64` / `-mmacosx-version-min=11.0`,仍需 macOS runner 或完整 osxcross 工具链。`release:macos:smoke --allow-non-macos --skip-benchmark --skip-heic` 只代表脚本/guardrail 预检。macOS 实机仍需跑 HEIC 导入、MAS bookmark、AVIF benchmark、`.dmg` 签名/公证。
+- security scope 当前是路径级 start/stop 钩子;持久化 MAS 访问仍需要文件选择层拿到真实 security-scoped bookmark data 后接入。
+
+验证:
+
+- `cargo +1.96.0 test --manifest-path src-tauri/Cargo.toml`:通过(90 lib tests + 3 bin tests)。
+- `cargo +1.96.0 clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings`:通过。
+- `pnpm run typecheck`:通过。
+- `pnpm run format:check`:通过。
+- `pnpm run release:macos:check`:通过。
+
+---
+
 ## 2026-07-02 — CI 远端实跑修复:RustSec 上游 advisory 例外边界
 
 Codex 推送 GitHub Actions 后实跑主 CI,修复 Linux/Windows/许可证几轮环境差异,并把最后的 RustSec 阻断收口为显式边界:

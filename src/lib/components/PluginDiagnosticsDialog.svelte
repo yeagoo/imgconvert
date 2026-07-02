@@ -169,8 +169,8 @@
         <div class="min-w-0 flex-1">
           <h2 id="plugin-diagnostics-title" class="text-sm font-semibold">插件诊断</h2>
           <p class="mt-1 text-xs text-muted-foreground">
-            HEIC 可选导入 provider、manifest 搜索路径与 helper 探测。Linux 可用 heif-convert;Windows
-            可选择 imgconvert-heic-helper.exe。
+            HEIC 可选导入 provider、manifest 搜索路径与 helper 探测。macOS 使用系统 ImageIO;Linux
+            可用 heif-convert;Windows 可选择 imgconvert-heic-helper.exe。
           </p>
         </div>
         <Button variant="ghost" size="icon" title="刷新" onclick={refresh} disabled={loading}>
@@ -238,7 +238,12 @@
                     </div>
                     <div class="min-w-0">
                       <dt class="font-medium text-foreground">许可</dt>
-                      <dd>{heic.activeProvider.license ?? "系统 helper"}</dd>
+                      <dd>
+                        {heic.activeProvider.license ??
+                          (heic.activeProvider.kind === "system-imageio"
+                            ? "系统 ImageIO"
+                            : "系统 helper")}
+                      </dd>
                     </div>
                     <div class="min-w-0 sm:col-span-2">
                       <dt class="font-medium text-foreground">执行文件</dt>
@@ -249,7 +254,9 @@
                     <div class="min-w-0 sm:col-span-2">
                       <dt class="font-medium text-foreground">argv</dt>
                       <dd class="truncate font-mono" title={heic.activeProvider.args.join(" ")}>
-                        {heic.activeProvider.args.join(" ")}
+                        {heic.activeProvider.args.length > 0
+                          ? heic.activeProvider.args.join(" ")
+                          : "无外部进程参数"}
                       </dd>
                     </div>
                   </dl>

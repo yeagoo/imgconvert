@@ -5,12 +5,14 @@ mod access;
 mod convert;
 mod external_codecs;
 mod import;
+mod macos_security;
+mod macos_system_codecs;
 mod native_dialog;
 mod thumbnail;
 
 use convert::{
     BatchProgressEvent, BatchState, BatchSummary, Capabilities, ConversionPlanEntry,
-    ConvertOptions, ConvertResult, RuntimeDiagnostics,
+    ConvertOptions, RuntimeDiagnostics,
 };
 use import::{
     ClipboardImageImportOptions, ClipboardImportState, ImportScanFile, ImportScanResult,
@@ -22,6 +24,17 @@ use thumbnail::{ThumbnailOptions, ThumbnailResult};
 
 use crate::external_codecs::{CodecDiagnostics, SelectedHelperDiagnostic};
 use crate::native_dialog::NativePickOptions;
+
+pub use convert::ConvertResult;
+
+pub fn run_path_conversion_smoke(
+    input: String,
+    out_dir: Option<String>,
+    format: String,
+) -> Result<ConvertResult, String> {
+    let options = convert::path_conversion_smoke_options(input, out_dir, format);
+    convert::convert(&options)
+}
 
 /// 返回当前宿主平台,供前端选择平台专属系统集成路径。
 #[tauri::command]

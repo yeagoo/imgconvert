@@ -9,6 +9,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::macos_security::ScopedResource;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthorizedPath {
     path: PathBuf,
@@ -25,6 +27,31 @@ impl AuthorizedPath {
 
     pub fn into_path_buf(self) -> PathBuf {
         self.path
+    }
+
+    pub fn scoped_access(&self) -> ScopedPathAccess {
+        ScopedPathAccess::start(&self.path)
+    }
+}
+
+#[derive(Debug)]
+pub struct ScopedPathAccess {
+    #[allow(dead_code)]
+    path: PathBuf,
+    _resource: ScopedResource,
+}
+
+impl ScopedPathAccess {
+    pub fn start(path: &Path) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            _resource: ScopedResource::start(path),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn started(&self) -> bool {
+        self._resource.started()
     }
 }
 
@@ -50,6 +77,10 @@ pub fn output_directory(path: Option<&str>) -> Option<AuthorizedPath> {
 
 pub fn clipboard_temp_path(path: impl Into<PathBuf>) -> AuthorizedPath {
     AuthorizedPath::new(path)
+}
+
+pub fn scoped_path_access(path: &Path) -> ScopedPathAccess {
+    ScopedPathAccess::start(path)
 }
 
 #[cfg(test)]
@@ -78,5 +109,11 @@ mod tests {
             output_directory(Some("/tmp/out")).unwrap().path(),
             Path::new("/tmp/out")
         );
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn scoped_access_is_noop_off_macos() {
+        assert!(!scoped_path_access(Path::new("/tmp")).started());
     }
 }

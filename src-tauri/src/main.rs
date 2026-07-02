@@ -5,9 +5,23 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    if std::env::var_os("IMGCONVERT_PATH_CONVERT_SMOKE").is_some() {
+        if let Err(error) = run_path_conversion_smoke() {
+            eprintln!("imgconvert path conversion smoke failed: {error}");
+            std::process::exit(70);
+        }
+        return;
+    }
     if std::env::var_os("IMGCONVERT_PACKAGE_CONVERT_SMOKE").is_some() {
         if let Err(error) = run_package_conversion_smoke() {
             eprintln!("imgconvert package conversion smoke failed: {error}");
+            std::process::exit(70);
+        }
+        return;
+    }
+    if std::env::var_os("IMGCONVERT_AVIF_BENCHMARK").is_some() {
+        if let Err(error) = run_avif_benchmark() {
+            eprintln!("imgconvert AVIF benchmark failed: {error}");
             std::process::exit(70);
         }
         return;
@@ -82,13 +96,7 @@ fn smoke_formats() -> Result<Vec<imgconvert_core::Format>, String> {
         .map(str::trim)
         .filter(|item| !item.is_empty())
     {
-        let format = match item.to_ascii_lowercase().as_str() {
-            "jpeg" | "jpg" => imgconvert_core::Format::Jpeg,
-            "png" => imgconvert_core::Format::Png,
-            "webp" => imgconvert_core::Format::WebP,
-            "avif" => imgconvert_core::Format::Avif,
-            other => return Err(format!("unsupported smoke format: {other}")),
-        };
+        let format = parse_smoke_format(item)?;
         if !formats.contains(&format) {
             formats.push(format);
         }
@@ -97,6 +105,16 @@ fn smoke_formats() -> Result<Vec<imgconvert_core::Format>, String> {
         return Err("no smoke formats requested".to_string());
     }
     Ok(formats)
+}
+
+fn parse_smoke_format(value: &str) -> Result<imgconvert_core::Format, String> {
+    match value.to_ascii_lowercase().as_str() {
+        "jpeg" | "jpg" => Ok(imgconvert_core::Format::Jpeg),
+        "png" => Ok(imgconvert_core::Format::Png),
+        "webp" => Ok(imgconvert_core::Format::WebP),
+        "avif" => Ok(imgconvert_core::Format::Avif),
+        other => Err(format!("unsupported smoke format: {other}")),
+    }
 }
 
 fn smoke_output_dir() -> Result<std::path::PathBuf, String> {
@@ -108,4 +126,220 @@ fn smoke_output_dir() -> Result<std::path::PathBuf, String> {
     std::fs::create_dir_all(&dir)
         .map_err(|error| format!("create smoke output dir {} failed: {error}", dir.display()))?;
     Ok(dir)
+}
+
+fn run_path_conversion_smoke() -> Result<(), String> {
+    let input = std::env::var("IMGCONVERT_PATH_CONVERT_SMOKE_INPUT")
+        .map_err(|_| "IMGCONVERT_PATH_CONVERT_SMOKE_INPUT is required".to_string())?;
+    let format =
+        std::env::var("IMGCONVERT_PATH_CONVERT_SMOKE_FORMAT").unwrap_or_else(|_| "png".to_string());
+    let target = parse_smoke_format(&format)?;
+    let out_dir = path_smoke_output_dir()?;
+
+    let result = tauri_app_lib::run_path_conversion_smoke(
+        input,
+        Some(out_dir.to_string_lossy().to_string()),
+        format,
+    )?;
+    let output = std::path::PathBuf::from(&result.output);
+    let bytes = std::fs::read(&output)
+        .map_err(|error| format!("read smoke output {} failed: {error}", output.display()))?;
+    if imgconvert_core::Format::from_magic(&bytes) != Some(target) {
+        return Err(format!("{} output magic mismatch", target.id()));
+    }
+    let probe = imgconvert_core::probe(&bytes).map_err(|error| error.to_string())?;
+    if probe.width == 0 || probe.height == 0 {
+        return Err(format!("{} output has invalid dimensions", target.id()));
+    }
+
+    println!(
+        "imgconvert path conversion smoke passed: input={} output={} format={} size={} dimensions={}x{}",
+        result.input, result.output, target.id(), result.out_size, probe.width, probe.height
+    );
+    Ok(())
+}
+
+fn path_smoke_output_dir() -> Result<std::path::PathBuf, String> {
+    let dir = std::env::var_os("IMGCONVERT_PATH_CONVERT_SMOKE_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::temp_dir().join(format!("imgconvert-path-smoke-{}", std::process::id()))
+        });
+    std::fs::create_dir_all(&dir).map_err(|error| {
+        format!(
+            "create path smoke output dir {} failed: {error}",
+            dir.display()
+        )
+    })?;
+    Ok(dir)
+}
+
+const MAX_AVIF_BENCHMARK_PIXELS: u64 = 33_177_600;
+const MAX_AVIF_BENCHMARK_ITERATIONS: u32 = 100;
+
+fn run_avif_benchmark() -> Result<(), String> {
+    use imgconvert_core::{codec_for, convert, EncodeOptions, Format, ImageData};
+
+    let width = env_u32("IMGCONVERT_AVIF_BENCHMARK_WIDTH", 1024)?;
+    let height = env_u32("IMGCONVERT_AVIF_BENCHMARK_HEIGHT", 768)?;
+    validate_benchmark_dimensions(width, height)?;
+    let iterations =
+        env_u32("IMGCONVERT_AVIF_BENCHMARK_ITERATIONS", 3)?.min(MAX_AVIF_BENCHMARK_ITERATIONS);
+    let speeds = env_speeds("IMGCONVERT_AVIF_BENCHMARK_SPEEDS", &[8, 10])?;
+    let source = ImageData::new(width, height, benchmark_rgba(width, height)?)
+        .map_err(|error| error.to_string())?;
+    let source_png = codec_for(Format::Png)
+        .encode(&source, &EncodeOptions::default())
+        .map_err(|error| error.to_string())?;
+
+    println!(
+        "{{\"event\":\"start\",\"format\":\"avif\",\"width\":{width},\"height\":{height},\"iterations\":{iterations},\"speeds\":{:?}}}",
+        speeds
+    );
+
+    for speed in speeds {
+        for iteration in 1..=iterations {
+            let options = EncodeOptions {
+                quality: 82,
+                avif_speed: speed,
+                ..Default::default()
+            };
+            let started = std::time::Instant::now();
+            let encoded =
+                convert(&source_png, Format::Avif, &options).map_err(|error| error.to_string())?;
+            let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+            println!(
+                "{{\"event\":\"sample\",\"format\":\"avif\",\"speed\":{speed},\"iteration\":{iteration},\"milliseconds\":{elapsed_ms:.3},\"bytes\":{}}}",
+                encoded.len()
+            );
+        }
+    }
+
+    println!("{{\"event\":\"finished\",\"format\":\"avif\"}}");
+    Ok(())
+}
+
+fn benchmark_rgba(width: u32, height: u32) -> Result<Vec<u8>, String> {
+    validate_benchmark_dimensions(width, height)?;
+    let pixels = u64::from(width)
+        .checked_mul(u64::from(height))
+        .and_then(|pixels| usize::try_from(pixels).ok())
+        .ok_or_else(|| "benchmark dimensions overflow".to_string())?;
+    let mut rgba = Vec::with_capacity(
+        pixels
+            .checked_mul(4)
+            .ok_or_else(|| "benchmark RGBA buffer overflow".to_string())?,
+    );
+    for y in 0..height {
+        for x in 0..width {
+            let gradient = ((x ^ y) & 0xff) as u8;
+            rgba.extend_from_slice(&[
+                ((u64::from(x) * 255) / u64::from(width)) as u8,
+                ((u64::from(y) * 255) / u64::from(height)) as u8,
+                gradient,
+                255,
+            ]);
+        }
+    }
+    Ok(rgba)
+}
+
+fn validate_benchmark_dimensions(width: u32, height: u32) -> Result<(), String> {
+    if width == 0 || height == 0 {
+        return Err("benchmark dimensions must be positive".to_string());
+    }
+    let pixels = u64::from(width)
+        .checked_mul(u64::from(height))
+        .ok_or_else(|| "benchmark dimensions overflow".to_string())?;
+    if pixels > MAX_AVIF_BENCHMARK_PIXELS {
+        return Err(format!(
+            "benchmark image is too large: {pixels} pixels > {MAX_AVIF_BENCHMARK_PIXELS}"
+        ));
+    }
+    Ok(())
+}
+
+fn env_u32(name: &str, default: u32) -> Result<u32, String> {
+    match std::env::var(name) {
+        Ok(value) => {
+            let parsed = value
+                .trim()
+                .parse::<u32>()
+                .map_err(|error| format!("{name} must be a positive integer: {error}"))?;
+            if parsed == 0 {
+                Err(format!("{name} must be a positive integer"))
+            } else {
+                Ok(parsed)
+            }
+        }
+        Err(_) => Ok(default),
+    }
+}
+
+fn env_speeds(name: &str, default: &[u8]) -> Result<Vec<u8>, String> {
+    let raw = match std::env::var(name) {
+        Ok(value) => value,
+        Err(_) => return Ok(default.to_vec()),
+    };
+    let mut speeds = Vec::new();
+    for item in raw
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+    {
+        let speed = item
+            .parse::<u8>()
+            .map_err(|error| format!("{name} contains invalid speed {item}: {error}"))?;
+        if speed > 10 {
+            return Err(format!("{name} speed must be 0-10: {speed}"));
+        }
+        if !speeds.contains(&speed) {
+            speeds.push(speed);
+        }
+    }
+    if speeds.is_empty() {
+        Err(format!("{name} must include at least one speed"))
+    } else {
+        Ok(speeds)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn smoke_format_parser_accepts_current_writable_formats() {
+        assert_eq!(
+            parse_smoke_format("jpg").unwrap(),
+            imgconvert_core::Format::Jpeg
+        );
+        assert_eq!(
+            parse_smoke_format("png").unwrap(),
+            imgconvert_core::Format::Png
+        );
+        assert!(parse_smoke_format("heic").is_err());
+    }
+
+    #[test]
+    fn benchmark_rgba_rejects_invalid_or_excessive_dimensions() {
+        assert!(benchmark_rgba(0, 1).is_err());
+        assert!(benchmark_rgba(64, 64).is_ok());
+        assert!(validate_benchmark_dimensions(100_000, 100_000).is_err());
+    }
+
+    #[test]
+    fn env_speeds_deduplicates_and_rejects_out_of_range_values() {
+        const OK_ENV: &str = "IMGCONVERT_TEST_BENCH_SPEEDS_OK";
+        const BAD_ENV: &str = "IMGCONVERT_TEST_BENCH_SPEEDS_BAD";
+
+        std::env::set_var(OK_ENV, "8,10,8");
+        std::env::set_var(BAD_ENV, "11");
+
+        assert_eq!(env_speeds(OK_ENV, &[6]).unwrap(), vec![8, 10]);
+        assert!(env_speeds(BAD_ENV, &[6]).is_err());
+
+        std::env::remove_var(OK_ENV);
+        std::env::remove_var(BAD_ENV);
+    }
 }

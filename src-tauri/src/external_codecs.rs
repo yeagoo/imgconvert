@@ -19,11 +19,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use crate::macos_system_codecs;
+
 const HEIC_HELPERS: &[&str] = &["heif-convert", "heif-dec", "imgconvert-heic-helper"];
 const HEIC_EXTENSIONS: &[&str] = &["heic", "heif", "hif"];
 const HEIC_DECODE_TIMEOUT: Duration = Duration::from_secs(120);
 const HEIC_HELPER_STDERR_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
-const MAX_HEIC_DECODED_PNG_BYTES: usize = 512 * 1024 * 1024;
+pub(crate) const MAX_HEIC_DECODED_PNG_BYTES: usize = 512 * 1024 * 1024;
 const MAX_HEIC_HELPER_STDERR_BYTES: usize = 64 * 1024;
 const MAX_PLUGIN_MANIFEST_BYTES: usize = 64 * 1024;
 const PLUGIN_DIRS_ENV: &str = "IMGCONVERT_CODEC_PLUGIN_DIRS";
@@ -189,11 +191,12 @@ impl Drop for WorkDir {
 }
 
 pub fn heic_available() -> bool {
-    find_heic_helper().is_some()
+    macos_system_codecs::heic_available() || find_heic_helper().is_some()
 }
 
 pub fn heic_provider_info() -> Option<CodecProviderInfo> {
-    find_heic_helper().map(|helper| helper.provider_info())
+    macos_system_codecs::heic_provider_info()
+        .or_else(|| find_heic_helper().map(|helper| helper.provider_info()))
 }
 
 pub fn heic_extensions() -> &'static [&'static str] {
@@ -201,16 +204,22 @@ pub fn heic_extensions() -> &'static [&'static str] {
 }
 
 pub fn codec_diagnostics() -> CodecDiagnostics {
-    let active_helper = find_heic_helper();
+    let active_system_provider = macos_system_codecs::heic_provider_diagnostic();
+    let active_helper = if active_system_provider.is_some() {
+        None
+    } else {
+        find_heic_helper()
+    };
     let disabled_reason = external_codec_discovery_disabled_reason();
     CodecDiagnostics {
         heic: HeicCodecDiagnostics {
-            enabled: active_helper.is_some(),
+            enabled: active_system_provider.is_some() || active_helper.is_some(),
             external_codecs_enabled: disabled_reason.is_none()
                 && external_codec_discovery_supported(),
             disabled_reason,
             extensions: HEIC_EXTENSIONS.to_vec(),
-            active_provider: active_helper.as_ref().map(Helper::provider_diagnostic),
+            active_provider: active_system_provider
+                .or_else(|| active_helper.as_ref().map(Helper::provider_diagnostic)),
             selected_helper: selected_helper_diagnostic(),
             manifest_dirs: manifest_dir_diagnostics(),
             system_helpers: system_helper_diagnostics(),
@@ -242,8 +251,11 @@ pub fn is_heic_magic(bytes: &[u8]) -> bool {
 }
 
 pub fn decode_heic_to_png(input: &Path) -> Result<Vec<u8>, String> {
+    if macos_system_codecs::heic_available() {
+        return macos_system_codecs::decode_heic_to_png(input);
+    }
     let helper = find_heic_helper().ok_or_else(|| {
-        "未检测到 HEIC 解码 helper。Linux 可安装 libheif-examples; Fedora 的 HEVC HEIC 可能还需要 RPM Fusion libheif-freeworld。".to_string()
+        "未检测到 HEIC 解码能力。macOS 使用系统 ImageIO; Linux 可安装 libheif-examples; Fedora 的 HEVC HEIC 可能还需要 RPM Fusion libheif-freeworld。".to_string()
     })?;
     decode_heic_to_png_with_helper(input, &helper)
 }

@@ -47,6 +47,8 @@
     "release:macos:check": "node scripts/check-platform-release-guardrails.mjs --platform=macos --channel=direct,store",
     "release:macos:direct:check": "node scripts/check-platform-release-guardrails.mjs --platform=macos --channel=direct",
     "release:macos:store:check": "node scripts/check-platform-release-guardrails.mjs --platform=macos --channel=store --require-store-env",
+    "bench:avif:macos": "node scripts/benchmark-macos-avif.mjs",
+    "release:macos:smoke": "node scripts/smoke-macos-runtime.mjs",
     "release:windows:check": "node scripts/check-platform-release-guardrails.mjs --platform=windows --channel=direct,store",
     "release:windows:direct:check": "node scripts/check-platform-release-guardrails.mjs --platform=windows --channel=direct",
     "release:windows:store:check": "node scripts/check-platform-release-guardrails.mjs --platform=windows --channel=store --require-store-env",

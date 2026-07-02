@@ -50,7 +50,7 @@
 - HEIC = **HEIF 容器 + 常用 HEVC 编码**,受**多个专利池**(MPEG LA / Access Advance / Via LA 等)覆盖,**无 AV1 那种干净 RF 授权**。**不随包分发任何 HEVC 编码器(如 x265)**。
 - **按平台处理**(评审 #1/#5/#9):
   - **Linux v1 主包:不内置 HEIC**(避免 libheif/LGPL + x265/GPL + 专利)。可选插件只作为用户显式安装后的外部 helper,decode-only。
-  - **macOS(后续):ImageIO**(经 `objc2`/`core-graphics` 进程内,不 shell `sips`);⚠️ 沙盒内 HEVC 编码能否用须实测。
+  - **macOS:ImageIO read-only 第一批已接入**(进程内 `ImageIO.framework`,不 shell `sips`,不链接 libheif/x265)。当前只把 HEIC/HEIF 作为导入能力,不启用 HEIC 输出;若未来启用编码,必须单独审计 HEVC 编码专利、MAS 沙盒行为和 App Review 风险。
   - **Windows(后续):WIC** —— 查看 HEIC 常需 **HEIF Image Extensions + HEVC Video Extensions**(后者部分地区付费);运行时探测 WIC 是否注册 HEIF/HEVC 编解码,缺失则引导安装。**v1 产品策略仅承诺解码**(不代表 WIC 技术上绝对不能编码),**不承诺开箱即用**。
   - **Windows 可选免费插件**:主程序已支持独立 `imgconvert-heic-helper.exe` 外部 helper,可避免用户必须购买 Microsoft Store HEVC 扩展;但 helper 只能作为单独分发的 LGPL helper,并且第一版 decode-only。不要直接整包带现成 MSYS2 `libheif` 发行物,因为其依赖组合可能包含 `x265`/GPL;如需自带,必须自建只含 decode 路径的 libheif + libde265 动态包并单独审计许可证/NOTICE/源码提供义务。
 - ⚠️ **「调用系统编解码器 = 专利免责」不成立**:平台(Apple/微软)为其系统 API 已向池方付费,这是**事实上的安全垫**,**非法律免责**。实务上针对「仅调系统 API、不捆绑编码器」的小应用追诉概率极低(Squoosh/ImageOptim 同此),但:

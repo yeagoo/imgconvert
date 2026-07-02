@@ -1455,9 +1455,11 @@ export async function checkEngine() {
         ? "插件"
         : heicProvider?.kind === "system-helper"
           ? "系统 helper"
-          : heicProvider?.kind === "selected-helper"
-            ? "手动 helper"
-            : "可选 helper";
+          : heicProvider?.kind === "system-imageio"
+            ? "系统 ImageIO"
+            : heicProvider?.kind === "selected-helper"
+              ? "手动 helper"
+              : "可选 helper";
     const heicText = capabilities.heic ? ` · HEIC 可选导入(${heicProviderText})` : "";
     engine.text = `Core 就绪 · ${capabilities.writable.map(formatLabel).join(" / ")}${heicText}`;
     engine.ok = capabilities.writable.length > 0;

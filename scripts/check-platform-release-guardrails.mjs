@@ -93,6 +93,7 @@ function checkCommonBundleMetadata() {
 
 function checkMacos() {
   requireBundleIcon(".icns", "macOS");
+  checkMacosRuntimeGuardrails();
   const directSelected = options.channels.includes("direct");
   const storeSelected = options.channels.includes("store");
   if (directSelected && tauriConfig.bundle?.targets === undefined) {
@@ -106,6 +107,59 @@ function checkMacos() {
   }
   if (storeSelected) {
     checkMacosStoreConfig();
+  }
+}
+
+function checkMacosRuntimeGuardrails() {
+  const packageScripts = packageJson.scripts ?? {};
+  if (!packageScripts["bench:avif:macos"]?.includes("benchmark-macos-avif.mjs")) {
+    failures.push("package.json must expose bench:avif:macos for Apple Silicon AVIF timing");
+  }
+  if (!packageScripts["release:macos:smoke"]?.includes("smoke-macos-runtime.mjs")) {
+    failures.push(
+      "package.json must expose release:macos:smoke for real-machine runtime acceptance",
+    );
+  }
+
+  const systemCodecs = readText(path.join(repoRoot, "src-tauri", "src", "macos_system_codecs.rs"));
+  if (!systemCodecs.includes("ImageIO.framework")) {
+    failures.push("macOS system codec bridge must use ImageIO.framework");
+  }
+  if (!systemCodecs.includes("system-imageio")) {
+    failures.push("macOS ImageIO HEIC provider kind must stay system-imageio");
+  }
+  if (!systemCodecs.includes("writable: Vec::new()")) {
+    failures.push(
+      "macOS ImageIO HEIC provider must remain read-only until HEIC encoding is audited",
+    );
+  }
+  if (!systemCodecs.includes("CGImageSourceCreateWithURL")) {
+    failures.push(
+      "macOS ImageIO HEIC bridge must use file URL decode instead of buffering full input",
+    );
+  }
+
+  const security = readText(path.join(repoRoot, "src-tauri", "src", "macos_security.rs"));
+  for (const expected of [
+    "CFURLStartAccessingSecurityScopedResource",
+    "CFURLStopAccessingSecurityScopedResource",
+  ]) {
+    if (!security.includes(expected)) {
+      failures.push(`macOS security scope shim must call ${expected}`);
+    }
+  }
+
+  const readme = readText(path.join(repoRoot, "packaging", "macos", "README.md"));
+  for (const expected of [
+    "ImageIO",
+    "security-scoped",
+    "notarytool",
+    "bench:avif:macos",
+    "release:macos:smoke",
+  ]) {
+    if (!readme.includes(expected)) {
+      failures.push(`packaging/macos/README.md must document ${expected}`);
+    }
   }
 }
 

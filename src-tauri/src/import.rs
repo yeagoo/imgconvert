@@ -419,6 +419,10 @@ fn normalize_limit(value: Option<usize>, default: usize, hard_max: usize) -> usi
 
 impl Scanner {
     fn scan(&mut self, paths: Vec<AuthorizedPath>) {
+        let _scopes = paths
+            .iter()
+            .map(AuthorizedPath::scoped_access)
+            .collect::<Vec<_>>();
         let mut stack = Vec::new();
         for grant in paths.into_iter().rev() {
             if !self.push_path(&mut stack, grant.into_path_buf(), 0, None) {
