@@ -134,7 +134,7 @@ jobs:
             }
           }
           cl
-          & $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER /?
+          Write-Host "Using Rust MSVC linker: $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER"
 
       - uses: pnpm/action-setup@v4
         with:
