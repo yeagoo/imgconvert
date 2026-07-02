@@ -19,6 +19,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(target_os = "macos")]
 use crate::macos_system_codecs;
 
 const HEIC_HELPERS: &[&str] = &["heif-convert", "heif-dec", "imgconvert-heic-helper"];
@@ -191,12 +192,11 @@ impl Drop for WorkDir {
 }
 
 pub fn heic_available() -> bool {
-    macos_system_codecs::heic_available() || find_heic_helper().is_some()
+    system_heic_available() || find_heic_helper().is_some()
 }
 
 pub fn heic_provider_info() -> Option<CodecProviderInfo> {
-    macos_system_codecs::heic_provider_info()
-        .or_else(|| find_heic_helper().map(|helper| helper.provider_info()))
+    system_heic_provider_info().or_else(|| find_heic_helper().map(|helper| helper.provider_info()))
 }
 
 pub fn heic_extensions() -> &'static [&'static str] {
@@ -204,7 +204,7 @@ pub fn heic_extensions() -> &'static [&'static str] {
 }
 
 pub fn codec_diagnostics() -> CodecDiagnostics {
-    let active_system_provider = macos_system_codecs::heic_provider_diagnostic();
+    let active_system_provider = system_heic_provider_diagnostic();
     let active_helper = if active_system_provider.is_some() {
         None
     } else {
@@ -251,13 +251,53 @@ pub fn is_heic_magic(bytes: &[u8]) -> bool {
 }
 
 pub fn decode_heic_to_png(input: &Path) -> Result<Vec<u8>, String> {
-    if macos_system_codecs::heic_available() {
-        return macos_system_codecs::decode_heic_to_png(input);
+    if system_heic_available() {
+        return system_decode_heic_to_png(input);
     }
     let helper = find_heic_helper().ok_or_else(|| {
         "未检测到 HEIC 解码能力。macOS 使用系统 ImageIO; Linux 可安装 libheif-examples; Fedora 的 HEVC HEIC 可能还需要 RPM Fusion libheif-freeworld。".to_string()
     })?;
     decode_heic_to_png_with_helper(input, &helper)
+}
+
+#[cfg(target_os = "macos")]
+fn system_heic_available() -> bool {
+    macos_system_codecs::heic_available()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn system_heic_available() -> bool {
+    false
+}
+
+#[cfg(target_os = "macos")]
+fn system_heic_provider_info() -> Option<CodecProviderInfo> {
+    macos_system_codecs::heic_provider_info()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn system_heic_provider_info() -> Option<CodecProviderInfo> {
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn system_heic_provider_diagnostic() -> Option<CodecProviderDiagnostic> {
+    macos_system_codecs::heic_provider_diagnostic()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn system_heic_provider_diagnostic() -> Option<CodecProviderDiagnostic> {
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn system_decode_heic_to_png(input: &Path) -> Result<Vec<u8>, String> {
+    macos_system_codecs::decode_heic_to_png(input)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn system_decode_heic_to_png(_input: &Path) -> Result<Vec<u8>, String> {
+    Err("系统 HEIC 解码仅在 macOS ImageIO 后端可用".to_string())
 }
 
 pub fn set_selected_heic_helper(path: Option<String>) -> Result<SelectedHelperDiagnostic, String> {

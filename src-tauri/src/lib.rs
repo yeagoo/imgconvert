@@ -6,6 +6,7 @@ mod convert;
 mod external_codecs;
 mod import;
 mod macos_security;
+#[cfg(target_os = "macos")]
 mod macos_system_codecs;
 mod native_dialog;
 mod thumbnail;
