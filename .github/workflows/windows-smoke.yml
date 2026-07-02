@@ -85,7 +85,35 @@ jobs:
             if ($_ -match "^(.*?)=(.*)$") {
               $name = $matches[1]
               $value = $matches[2]
-              if ($name -and -not $name.StartsWith("=")) {
+              $envNames = @(
+                "DevEnvDir",
+                "ExtensionSdkDir",
+                "Framework40Version",
+                "FrameworkDir",
+                "FrameworkDIR64",
+                "FrameworkVersion",
+                "FrameworkVersion64",
+                "INCLUDE",
+                "LIB",
+                "LIBPATH",
+                "Path",
+                "UCRTVersion",
+                "UniversalCRTSdkDir",
+                "VCIDEInstallDir",
+                "VCINSTALLDIR",
+                "VCToolsInstallDir",
+                "VCToolsRedistDir",
+                "VCToolsVersion",
+                "VisualStudioVersion",
+                "VSINSTALLDIR",
+                "WindowsLibPath",
+                "WindowsSdkBinPath",
+                "WindowsSdkDir",
+                "WindowsSDKLibVersion",
+                "WindowsSDKVersion",
+                "WindowsSdkVerBinPath"
+              )
+              if ($name -and $envNames -contains $name) {
                 Set-Item -Path "Env:$name" -Value $value
                 if ($name -ieq "Path") {
                   $value -split ";" | Where-Object { $_ -and (Test-Path $_) } | ForEach-Object {
