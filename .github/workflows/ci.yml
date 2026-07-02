@@ -16,6 +16,7 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "1"
   NODE_VERSION: "24"
+  CARGO_ABOUT_VERSION: "0.9.0"
 
 jobs:
   frontend:
@@ -35,7 +36,7 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
       - uses: dtolnay/rust-toolchain@1.96.0
       - run: pnpm install --frozen-lockfile
-      - run: cargo install cargo-about --locked --features cli
+      - run: cargo install cargo-about --version ${{ env.CARGO_ABOUT_VERSION }} --locked --features cli
       - run: pnpm run quality:frontend
       - run: pnpm run license:npm
       - run: pnpm run license:verify
@@ -95,6 +96,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.96.0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Install native codec build tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install meson ninja
+          choco install nasm -y
+          meson --version
+          ninja --version
+          nasm --version
       - run: cargo +1.96.0 test --manifest-path src-tauri/Cargo.toml external_codecs -- --nocapture
 
   security:
@@ -116,7 +128,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: cargo install cargo-deny --version 0.19.9 --locked
       - run: cargo install cargo-audit --locked
-      - run: cargo install cargo-about --locked --features cli
+      - run: cargo install cargo-about --version ${{ env.CARGO_ABOUT_VERSION }} --locked --features cli
       - run: pnpm run license:check
       - run: cd src-tauri && cargo deny check bans sources advisories
       - run: cd src-tauri && cargo audit
