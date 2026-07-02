@@ -11,7 +11,7 @@
 - **宽松许可**:允许商用、闭源衍生、上架各应用商店;保留版权与许可声明即可。
 - **专利授权条款**:相比 MIT 多了显式专利授权(对图像编解码这类领域更稳),含专利报复终止条款。
 - **NOTICE 要求**:分发时须保留本仓库 `NOTICE` 及所依赖 Apache-2.0 组件的 NOTICE 内容。
-- **SPDX 标识统一为 `Apache-2.0`**(`Cargo.toml`/`package.json` license 字段与各源文件头一致)。
+- **SPDX 标识默认统一为 `Apache-2.0`**(`Cargo.toml`/`package.json` license 字段与各源文件头一致)。例外:`packaging/flatpak/com.ivmm.imgconvert.metainfo.xml` 的 AppStream 元数据按 Flatpak 工具链要求使用 `metadata_license=CC0-1.0`;项目/应用许可证仍是 `Apache-2.0`。
 - **贡献**:inbound = outbound(同 Apache-2.0)+ DCO,不要求 CLA,见 [../CONTRIBUTING.md](../CONTRIBUTING.md)。Apache-2.0 §5 已含贡献条款。
 
 ## 上架可行性
@@ -52,7 +52,7 @@
   - **Linux v1 主包:不内置 HEIC**(避免 libheif/LGPL + x265/GPL + 专利)。可选插件只作为用户显式安装后的外部 helper,decode-only。
   - **macOS(后续):ImageIO**(经 `objc2`/`core-graphics` 进程内,不 shell `sips`);⚠️ 沙盒内 HEVC 编码能否用须实测。
   - **Windows(后续):WIC** —— 查看 HEIC 常需 **HEIF Image Extensions + HEVC Video Extensions**(后者部分地区付费);运行时探测 WIC 是否注册 HEIF/HEVC 编解码,缺失则引导安装。**v1 产品策略仅承诺解码**(不代表 WIC 技术上绝对不能编码),**不承诺开箱即用**。
-  - **Windows 可选免费插件**:可做独立 `imgconvert-heic-helper.exe` 来避免用户必须购买 Microsoft Store HEVC 扩展;但只能作为单独分发的 LGPL helper,并且第一版 decode-only。不要直接整包带现成 MSYS2 `libheif` 发行物,因为其依赖组合可能包含 `x265`/GPL;如需自带,必须自建只含 decode 路径的 libheif + libde265 动态包并单独审计许可证/NOTICE/源码提供义务。
+  - **Windows 可选免费插件**:主程序已支持独立 `imgconvert-heic-helper.exe` 外部 helper,可避免用户必须购买 Microsoft Store HEVC 扩展;但 helper 只能作为单独分发的 LGPL helper,并且第一版 decode-only。不要直接整包带现成 MSYS2 `libheif` 发行物,因为其依赖组合可能包含 `x265`/GPL;如需自带,必须自建只含 decode 路径的 libheif + libde265 动态包并单独审计许可证/NOTICE/源码提供义务。
 - ⚠️ **「调用系统编解码器 = 专利免责」不成立**:平台(Apple/微软)为其系统 API 已向池方付费,这是**事实上的安全垫**,**非法律免责**。实务上针对「仅调系统 API、不捆绑编码器」的小应用追诉概率极低(Squoosh/ImageOptim 同此),但:
   - 营销/文案**勿平铺「支持 HEIC」**,按平台能力如实写。
   - **商用/收费版上线前找 IP 律师**就 HEVC 专利出书面意见。
@@ -61,7 +61,7 @@
 
 - 插件仓库/包名建议:`imgconvert-heic-plugin`。许可证可用 `LGPL-3.0-or-later` 或与所用 libheif/libde265 组合兼容的 LGPL 版本。
 - 分发形态:独立 installer/压缩包/系统包;主程序只发现 manifest 与调用 helper。不能把 helper 当作主程序内置依赖,不能让 `cargo deny` 主依赖树出现 LGPL/GPL。
-- 商店形态:App Store/MS Store/Flathub 构建默认禁用外部 helper;如未来某渠道允许插件/扩展,需按该渠道单独设计和审计。
+- 商店形态:App Store/MS Store/Flathub 构建默认禁用外部 helper;当前 Flatpak manifest 已设置 `IMGCONVERT_DISABLE_EXTERNAL_CODECS=1` 且不捆绑 HEIC/helper。如未来某渠道允许插件/扩展,需按该渠道单独设计和审计。
 - 功能范围:只声明 `readable: ["heic","heif","hif"]`;`writable` 为空。HEIC 编码输出暂缓,避免 x265/GPL 与 HEVC 编码专利风险。
 - LGPL 义务:插件必须提供许可证全文、NOTICE/版权、对应源码或源码获取方式,并允许用户替换 LGPL 组件。若修改 libheif/libde265,需提供修改源码。
 - 安全义务:主程序不得执行来自图片目录的同名 helper;只允许受信任安装目录或用户显式选择的 helper。调用必须避免 shell 拼接,防止路径/文件名注入。
@@ -90,6 +90,7 @@
 - `fast_image_resize`(MIT/Apache,**待核精确 SPDX**)—— 缩放
 - `ssimulacra2`(**BSD-2-Clause**,crates.io 实查确认)—— 质量判定
 - `color_quant`(MIT)—— 有损 PNG 量化(替代 imagequant)
+- `blake3`(CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception)—— 结果缓存 hash
 - Tauri / Svelte / shadcn-svelte / phosphor-svelte / Tailwind —— 均宽松(MIT 等)
 
 ## 合规自动化与审计范围

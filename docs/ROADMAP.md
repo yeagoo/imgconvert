@@ -1,6 +1,6 @@
 # 开发路线图
 
-> 📍 **当前进度(2026-06-30)**:P0.5 引擎尖刺已通(`imgconvert-core` 跑通 JPEG/PNG/WebP/AVIF,测试全绿)→ **P0「前端整顿」三项已落地**(组件化架构 + core 能力契约 + shadcn 控件/格式选择器)→ **P0.5 批量进度/取消协议与许可闭环已落地** → **P1 文件导入层、并发批量、导入元数据 ping、异步缩略图、ask 覆盖批量协议与文件可靠性最小闭环已落地**(拖拽/选择文件/选择文件夹统一走 Rust 扫描、过滤、去重;ask/skip/overwrite 批量转换均走 Channel;导入时展示尺寸/常见 DPI;队列卡片懒加载缩略图;输出保留相对目录与源 mtime;EXIF orientation 真旋正;大图按内存预算降并发;写失败提示半成品清理结果)。下一步进入 P1 剪贴板导入或 P2 保真/压缩设计。详见 [DEVLOG.md](DEVLOG.md)。
+> 📍 **当前进度(2026-07-02)**:P0.5 引擎尖刺已通(`imgconvert-core` 跑通 JPEG/PNG/WebP/AVIF,测试全绿)→ **P0「前端整顿」三项已落地**(组件化架构 + core 能力契约 + shadcn 控件/格式选择器)→ **P0.5 批量进度/取消协议、许可闭环、原生工具链预检、文件访问授权边界与并发诊断已落地** → **P1 文件导入层、并发批量、导入元数据 ping、异步缩略图、ask 覆盖批量协议、文件可靠性与剪贴板导入最小闭环已落地** → **P1.5 Linux/Windows 外部 HEIC 可选导入闭环已落地**(manifest 协议、系统/插件 helper、用户显式 helper 白名单、插件诊断 UI、渠道禁用边界) → **P2 高级压缩与保真功能项已落地**(per-format 参数、skip-if-larger、多候选、质量下限、ICC/EXIF/XMP、自动质量、代际防护、结果缓存、实验性 PNG 限色、高级参数 UI) → **P3 Linux 发布闭环与本机 RC 实测已落地**(release workflow、stale artifact 防护、包元数据校验、AppImage scrub、发行版 Docker smoke matrix、checksums、Flatpak build/install/runtime conversion smoke) → **后续平台发布护栏已落地**(macOS/Windows metadata + store external-helper build-time guardrail + macOS direct/MAS entitlements + Windows direct installer guardrail)。详见 [DEVLOG.md](DEVLOG.md)。
 
 > 原则:**UI/UX 优先**——先把界面与交互做出来「看得见」,再逐步接真实功能与高级压缩。
 > 参考依据见 [REFERENCES.md](REFERENCES.md),引擎/打包设计见 [ENGINE.md](ENGINE.md)。
@@ -20,7 +20,7 @@
 | **P0.5** | 技术尖刺(并行) | core crate / C 工具链 / AVIF 后端 / 许可清单 / **文件访问抽象(为商店留门)**,避免返工 |
 | **P1** | 拖拽 + 批量 + 真实转换 | 拖拽、并发批量(rav1e `threads=1` 防 oversubscribe)、进度(Channel)、取消 |
 | **P1.5** | 可选 codec 插件 | HEIC 外部 helper 协议、系统依赖探测、decode-only 插件 |
-| **P2** | 高级压缩与保真 | 自动质量(**仅 JPEG/WebP**)、ICC/EXIF 透传、代际防护 |
+| **P2** | 高级压缩与保真 | 自动质量(**仅 JPEG/WebP**)、ICC/EXIF/XMP 透传、代际防护 |
 | **P3** | 发布(Linux 优先) | **.deb/.rpm/AppImage + Flathub**;macOS(直分发→MAS)、Windows(→MS Store)后续阶段 |
 
 ---
@@ -77,23 +77,23 @@
 >
 > 🚦 **强制门槛**:进入 P3 打包前必须通过——① 干净 Linux(Debian/Ubuntu/Fedora)上转换跑通;② 依赖树**不含 GPL/AGPL/LGPL**(无 imagequant/dssim/x265);③ `THIRD_PARTY_LICENSES` 可自动生成 + **应用内「开源许可」页**可见;④ 文件访问只走「用户显式授权目录」抽象(为 Flatpak portal / 未来 MAS bookmark 留门)。
 
-- [x] **core crate 尖刺**(2026-06):建 `crates/imgconvert-core`,`Codec` trait + `ImageData`(RGBA8,8-bit SDR,带不变量校验)+ pipeline,接 `mozjpeg`/`oxipng`/`webp`/`image`,跑通 JPEG/PNG/WebP 一轮转换 + 跨格式转换;`image` 已 `default-features=false`(避免带回 AVIF/ravif/rayon/nasm);JPEG 编码 `catch_unwind` 截 Rust panic、alpha 合成白底;WebP 解码 `BitstreamFeatures` 预检拒动图/超尺寸。aarch64 Linux 编译 + clippy(`-D warnings`)+ fmt + 10 测试全过。⚠️ **N5 待办**:`webp 0.3` 仅暴露 `encode_simple(lossless, quality)`,**未暴露 method/near_lossless/sharp_yuv**——P2 高级参数需降级到 `libwebp-sys` 自填 `WebPConfig`。
+- [x] **core crate 尖刺**(2026-06):建 `crates/imgconvert-core`,`Codec` trait + `ImageData`(RGBA8,8-bit SDR,带不变量校验)+ pipeline,接 `mozjpeg`/`oxipng`/`webp`/`image`,跑通 JPEG/PNG/WebP 一轮转换 + 跨格式转换;`image` 已 `default-features=false`(避免带回 AVIF/ravif/rayon/nasm);JPEG 编码 `catch_unwind` 截 Rust panic、alpha 合成白底;WebP 解码 `BitstreamFeatures` 预检拒动图/超尺寸。aarch64 Linux 编译 + clippy(`-D warnings`)+ fmt + 10 测试全过。P2 已用 `webp::WebPConfig`/`encode_advanced()` 接入 method;near_lossless/sharp_yuv 仍留到后续高级参数面板再评估是否需要更底层 binding。
 - [x] **AVIF 后端尖刺**(2026-06):`libavif-sys 0.17`(`codec-rav1e` 编码 + `codec-dav1d` 解码,`default-features=false`)接入 core,`AvifCodec` 实现编解码 + magic 检测(`ftyp`/avif·avis)。**aarch64 Linux 全链编译通过**(rav1e 纯 Rust、dav1d 走 meson/ninja,arm64 无需 nasm,首次 ~1min)。验证:**alpha 往返**(YUV444 + RGBA)、**ICC 逐字节往返**(`avif_preserves_icc` 测试,证实弃用裸 ravif 的主因已解决,评审 #8)、**convert 管线 PNG↔AVIF**。FFI 用 RAII guard(`ImageGuard`/`EncoderGuard`/`DecoderGuard`/`RwDataGuard`)保证各返回路径释放 C 资源。**后端可插拔点**:`avifEncoder.codecChoice`(当前 `AVIF_CODEC_CHOICE_RAV1E`;切 aom/svt 只需改该枚举 + Cargo feature)。⚠️ 待办:(a) **N3** `maxThreads=1` 已设但未证实压住 rav1e 内部 rayon 池(需 macOS/多核机实测线程数);(b) AVIF 真·无损需 identity matrix,当前不在 `capabilities().lossless` 声明;(c) speed=8 默认值待 arm64 实测(评审 #2)。
-- [ ] **C 工具链尖刺**:Linux 三发行版 + arm64 各编译通过——NASM(x86)+ cmake/meson/ninja;**NASM 装好后加版本检测,失败给明确错误**。⚠️ **arm64 用原生 runner,别交叉**(Claude N4:dav1d meson cross-file + cmake toolchain 是出名的坑,无 Linux-arm64 交叉先例);若必须交叉则列为高风险待验证。
-- [ ] **文件访问抽象尖刺(新增,前移)**:把「读输入目录 / 写输出目录」抽象成显式授权模型,先在 **Flatpak portal** 下跑通(拿到的可能是 portal 路径,非真实路径);确保该抽象**日后能换 macOS security-scoped bookmark**。← 决定 P1 文件 API,不能拖到 P3(评审一致)。P1 已先把输入导入统一收口到 `scan_import_paths`,后续 portal/bookmark 接入应落在该边界下。
-- [ ] **并发尖刺**:文件级信号量并发下不 oversubscribe / 不 OOM(评审 #4)。⚠️ **验收(Claude N3)**:设 libavif `maxThreads=1` 后**实测 rav1e 是否仍另起自己的 rayon 全局池**(`libavif-sys` 的 maxThreads 控的是 libavif tile 线程,未必压住 rav1e)——若是,需显式设 rav1e 线程池或关其 threading 特性。
+- [x] **C 工具链尖刺**:新增 `pnpm run toolchain:check`,检查 cmake / meson / ninja,并在 x86/x86_64 检查 NASM;当前 Linux arm64 本机通过。三发行版/双架构 release matrix 仍放 P3 CI,但本地和 CI 已有明确失败诊断。
+- [x] **文件访问抽象尖刺(新增,前移)**:新增 `src-tauri/src/access.rs` 授权路径边界,导入扫描、输出目录和剪贴板临时文件都先收口为 grant;不依赖 canonical 路径,为 Flatpak portal 映射路径和 macOS security-scoped bookmark shim 留接口。Flatpak 包内 runtime conversion smoke 已在 P3 落地;交互式文件 portal 选择/授权流仍作为人工发布验收项。
+- [x] **并发尖刺**:文件级 worker 上限 + 内存预算降并发已落地;`AVIF_ENCODER_MAX_THREADS=1` 作为 core 常量写入 libavif encoder,并通过 `runtime_diagnostics()` 暴露默认并发、内存预算和 AVIF 内部线程上限。rav1e 平台性能/Apple Silicon speed 仍按 macOS 阶段实测。
 - [x] **许可清单尖刺**:`cargo-about` 生成 `THIRD_PARTY_LICENSES`;**做应用内「开源许可」页**(全文,含 IJG/BSD/Apache NOTICE);`cargo deny` 禁 GPL/AGPL/LGPL。npm 侧读取已安装包的 LICENSE/NOTICE/COPYING 文件并纳入生成物;少量缺失文件的 npm 包在生成物中标记,发布前人工复核。
 - [x] **进度/取消协议**:Tauri **Channel** + `CancellationToken` 最小闭环。当前 `convert_batch` 串行执行,取消在文件边界生效;P1 再接文件级并发/信号量/内存预算。
-- [ ] **最小 CI**:`cargo fmt --check`、`cargo clippy`、`cargo test`、`cargo deny check`、`pnpm run check`、`pnpm run build`。
+- [x] **最小 CI**:`cargo fmt --check`、`cargo clippy`、`cargo test`、`cargo deny check`、`pnpm run check`、`pnpm run build`。已新增 `.github/workflows/ci.yml`,并补 `quality:frontend` / `quality:rust` / `quality:security` / Playwright Web preview E2E。
 - [ ] **(macOS 阶段)系统 HEIC 尖刺**:`objc2`/`core-graphics` 调 ImageIO 读写 HEIC,**且必须在 App Sandbox 内验证编码成功**(评审:沙盒内 HEVC 编码能否用需实测)。
-- [ ] **HEIC 外部插件协议尖刺(P1.5 候选)**:主程序只做 manifest 发现 + 独立进程调用 + 能力矩阵合并;Linux 插件优先检测系统 `heif-convert`/`heif-dec`,Windows 插件可单独打包 decode-only helper。主程序依赖树继续禁 GPL/AGPL/LGPL;插件单独 LGPL 分发,第一版只读 HEIC/HEIF,不写 HEIC。
+- [x] **HEIC 外部插件协议尖刺(P1.5 候选)**:主程序只做 manifest 发现 + 独立进程调用 + 能力矩阵合并;Linux 插件优先检测系统 `heif-convert`/`heif-dec`,Windows 插件可单独打包 decode-only `imgconvert-heic-helper.exe`。主程序依赖树继续禁 GPL/AGPL/LGPL;插件单独 LGPL 分发,第一版只读 HEIC/HEIF,不写 HEIC。Linux/Windows 外部 helper 协议、manifest 与诊断 UI 已落地;Windows WIC 系统路线仍属 P3。
 - [ ] **(macOS 阶段)rav1e arm64 实测**:M 系列上 benchmark AVIF speed 8/10,对比 ImageIO/svt-av1,再锁默认值(评审 #2,最重要的待实测项)。
 - [ ] **(macOS 阶段)security-scoped bookmark shim**:**Tauri 无内建支持**(核心 issue [#3716](https://github.com/tauri-apps/tauri/issues/3716) 自 2022 至今未解)→ 需自写 `objc2` 的 `startAccessingSecurityScopedResource`/`stop` 生命周期(忘 stop 会泄漏内核资源并丢失越沙盒能力)。这是「用户显式授权目录」抽象的 macOS 落地。`tauri-plugin-dialog` 能返回 bookmark 数据,但 start/stop 自理。MAS 本身已验证可行(官方文档 + 真实上架案例)。
 
 ## P1 — 拖拽 + 批量 + 真实转换
 
 - [x] Tauri `tauri://drag-drop` 原生拖拽(拿绝对路径,改写自 DropWebP MIT)
-- [ ] 剪贴板粘贴导入
+- [x] 剪贴板粘贴导入
 - [x] 递归目录扫描 + 扩展名过滤 + 去重 + 扫描上限/取消(改写自 DropWebP)
 - [x] **Rust 端并发批量最小闭环**(全局任务队列 + worker 上限)——已替换 skip/overwrite 路径的串行批量。
   - 外层全局并发上限(默认 `(available_parallelism-1).clamp(1,8)`)+ 用户可调并发已落地;大图场景按导入尺寸提示做内存预算降并发。
@@ -104,9 +104,9 @@
 - [x] 导入 ping 尺寸/DPI(当前尺寸 + PNG `pHYs`/JPEG JFIF DPI;失败不阻断导入)
 - [x] 异步生成缩略图(视口懒加载 + 并发 2 + Blob URL 生命周期清理)
 - [x] **原子写 + 保留时间戳 + 保留目录结构**(原子临时文件写入已落地;目录导入保留相对目录;输出 best-effort 保留源 mtime;写失败会提示并清理半成品)
-- [ ] HEIC:⚠️ **主程序 v1 不内置 HEIC**;macOS/Windows 系统原生 HEIC 是**后续平台阶段**任务。Linux/Windows 可通过 P1.5 外部插件/helper 做 decode-only 可选增强,不作为 P1 阻塞项(见 ENGINE.md §3 / LEGAL.md)。
+- [x] HEIC:⚠️ **主程序 v1 不内置 HEIC**;Linux 通过 P1.5 外部 helper/plugin 完成 decode-only 可选导入闭环。macOS/Windows 系统原生 HEIC 是**后续平台阶段**任务,不作为 P1 阻塞项(见 ENGINE.md §3 / LEGAL.md)。
 - [x] **文件可靠性最小闭环**:失败清理半成品;同名冲突策略;**EXIF orientation 真旋正**;超大图内存预算/降并发;符号链接/权限错误友好处理;传参**传路径不传字节**。
-- [ ] **ICC/EXIF 元数据保真**:完整透传或容器级显式剥离审计(见 ENGINE.md §5),放入 P2 保真阶段。
+- [x] **ICC/EXIF/XMP 元数据保真**:完整透传或容器级显式剥离审计(见 ENGINE.md §5),放入 P2 保真阶段。
 
 ---
 
@@ -114,28 +114,42 @@
 
 目标:在不污染 Apache-2.0 主依赖树的前提下,让用户显式安装后启用 HEIC/HEIF 导入。
 
-- [ ] **插件协议**:定义 manifest(`id/protocol/license/readable/writable/mode`)、能力发现、版本兼容、错误码;主程序把插件能力合并到 `capabilities()` 但标记为 optional/provider。
-- [ ] **独立进程 helper 调用**:禁止 `dlopen` 到主进程;使用 argv/JSON/stdin/stdout/临时文件。helper 路径只允许受信任安装目录或用户显式选择,禁止从图片目录自动执行同名文件。
-- [ ] **Linux helper**:优先调用系统 `heif-convert`/`heif-dec`;Debian/Ubuntu 提示安装 `libheif-examples`,Fedora 提示 `libheif-tools`/`heif-pixbuf-loader` 与可能需要 RPM Fusion `libheif-freeworld`。`heif-gdk-pixbuf`/`heif-thumbnailer` 只影响 GTK/文件管理器,不能当作 core 能力。
-- [ ] **Windows helper**:系统路线先探测 WIC + HEIF/HEVC 扩展;免费插件路线可自带 `imgconvert-heic-helper.exe + libheif/libde265` decode-only 动态库。不要直接打包现成 MSYS2 `libheif` 发行包,因依赖组合可能带 `x265`/GPL;必须自建并审计。
-- [ ] **许可与专利文案**:插件单独 LGPL 分发并提供源码/NOTICE;第一版只声明 HEIC/HEIF 输入,不提供 HEIC 输出;UI 文案写「通过可选插件导入 HEIC」,不写“开箱支持 HEIC”。
-- [ ] **渠道边界**:外部 helper 默认只面向直发包/用户自行安装场景;App Store/MS Store/Flathub 构建默认禁用,除非后续证明渠道允许这种扩展模型。
+- [x] **插件协议(v1 manifest 最小闭环)**:已定义并实现 manifest(`id/protocol/license/readable/writable/mode/decode`)、能力发现、版本兼容、错误码前缀;主程序把插件能力合并到 `capabilities().codecProviders` 并标记为 optional/provider。
+- [x] **插件诊断 UI**:新增 `codec_diagnostics()` 与顶栏诊断弹层,显示 active provider、手动 helper、manifest 搜索目录/拒绝原因、系统 helper 探测结果;弹层每次打开刷新,顶栏能力文案在窄屏截断。
+- [x] **独立进程 helper 调用**:当前已禁止 `dlopen` 到主进程,通过 argv + 受控临时 PNG 文件调用外部 helper,不走 shell;已做 helper 超时、HEIF/HEIC magic 校验、Unix 私有临时目录、stderr/输出文件大小上限。
+- [x] **用户显式 helper 白名单**:诊断 UI 可选择/清除本机 helper;后端保存 canonical 可执行文件路径并在每次使用前校验,失效路径显示为不可用但不会执行。发现优先级为手动 helper → manifest provider → 系统 PATH helper。
+- [x] **Linux helper(系统 PATH 探测最小闭环)**:当前优先调用系统 `heif-convert`/`heif-dec`;Debian/Ubuntu 提示安装 `libheif-examples`,Fedora 提示可能需要 RPM Fusion `libheif-freeworld`;`heif-gdk-pixbuf`/`heif-thumbnailer` 继续只作为文件管理器能力,不当作 core 能力。
+- [x] **Windows 外部 helper**:免费插件路线可自带 `imgconvert-heic-helper.exe + libheif/libde265` decode-only 动态库;主程序支持用户手动选择 helper、manifest provider 与受信任 PATH 探测。不要直接打包现成 MSYS2 `libheif` 发行包,因依赖组合可能带 `x265`/GPL;必须自建并审计。Windows WIC + HEIF/HEVC 扩展探测仍留到 P3 平台发布项。
+- [x] **许可与专利文案**:插件单独 LGPL 分发并提供源码/NOTICE;第一版只声明 HEIC/HEIF 输入,不提供 HEIC 输出;UI 文案写「HEIC 可选导入」,不写“开箱支持 HEIC”。
+- [x] **渠道边界**:外部 helper 默认只面向直发包/用户自行安装场景;App Store/MS Store/Flathub 构建可通过 `IMGCONVERT_DISABLE_EXTERNAL_CODECS=1` 禁用外部 codec/helper 自动发现,除非后续证明渠道允许这种扩展模型。
 
 ---
 
 ## P2 — 高级压缩与保真
 
-- [ ] **per-format 参数**(在 core 已接 mozjpeg/oxipng/webp/libavif-sys 之上):quality、progressive、oxipng level、AVIF speed、WebP method;默认值取自 Hando bench(oxipng=4 / AVIF speed=8 / WebP method=4,**arm64 待实测**)
-- [ ] 全局有损/无损开关 + 每格式质量下限阈值(TIFF 为 **P2 可选**,非 v1 承诺,与顶部「TIFF 推后」一致)
-- [ ] **有损 PNG 量化用宽松库**(`color_quant`/`image` 内置,⚠️ **不用 imagequant/GPL**)
-- [ ] **「多候选取最小 + skip-if-larger / 永不变差」**(借鉴 ImageOptim + Hando keep_bar)
-- [ ] **自动质量(仅 JPEG/WebP)**:`ssimulacra2`(宽松)感知打分 + 二分搜索压到目标分(借鉴 Hando `auto.rs`,重写)
-- [ ] **ICC/EXIF 透传容器手术**(JPEG APP2 分块 / WebP RIFF / PNG eXIf 排序;**AVIF 走 libavif 已能保留 ICC**;借鉴 Hando `icc.rs`/`metadata.rs`,重写)
-- [ ] **代际损失防护**(bpp 分级,已有损源不重压;借鉴 Hando `auto.rs`)
-- [ ] 结果缓存(设置哈希 + 文件 blake3 哈希)跳过已优化(借鉴 springbok)
-- [ ] 高级参数面板(AVIF speed/subsample、WebP near_lossless/sharp_yuv、MozJPEG trellis 等)
-- [ ] ⚠️ **不做**:JPEG XL(评审一致,过早);有损 PNG 量化(`color_quant`)仅标「实验性」,PNG 默认 oxipng 无损
-- [ ] **CI 进阶**:npm license audit、Tauri build smoke test、`cargo-about` 自动生成、依赖树 GPL/AGPL/LGPL 拦截、干净机器冒烟。
+- [x] **per-format 参数第一批**(在 core 已接 mozjpeg/oxipng/webp/libavif-sys 之上):quality、progressive、oxipng level、AVIF speed、WebP method;默认值取自 Hando bench(oxipng=4 / AVIF speed=8 / WebP method=4,**arm64 待实测**)。已贯通 core、Tauri IPC、设置持久化和 shadcn 格式参数 UI。
+- [x] 全局有损/无损开关 + 每格式质量下限阈值(TIFF 为 **P2 可选**,非 v1 承诺,与顶部「TIFF 推后」一致)。当前全局无损继续仅对 PNG/WebP 生效;JPEG/WebP/AVIF 可设 30-100 的质量下限,低于 30 视为禁用。
+- [x] **有损 PNG 量化用宽松库**:`color_quant`(MIT)实验性限色,默认关闭;仍输出普通 PNG 并继续走 oxipng。⚠️ **不用 imagequant/GPL**。
+- [x] **skip-if-larger / 永不变差第一批**:候选输出不小于源文件时跳过写入,批量计为 skipped;默认开启,可在设置里关闭以强制格式迁移。
+- [x] **多候选取最小第一批**(借鉴 ImageOptim + Hando keep_bar):同一目标格式下比较等价多参数候选,只写最小有效输出。当前覆盖 JPEG baseline/progressive、PNG oxipng level、WebP method;不改变 quality/lossless/目标格式,AVIF 暂不做多候选以避免编码时间爆炸。
+- [x] **自动质量(仅 JPEG/WebP)**:`ssimulacra2`(BSD-2-Clause,default-features=false)感知打分 + step≈4 二分搜索压到目标分;WebP lossless 作为候选参与比较。
+- [x] **ICC/EXIF/XMP 透传容器手术**:默认剥离,开启 `preserveMetadata` 后 JPEG APP1 EXIF/XMP + APP2 ICC(含分块)、PNG `iCCP`/`eXIf`/未压缩 `iTXt` XMP、WebP RIFF/`VP8X`/`ICCP`/`EXIF`/`XMP ` 逐字节保留;AVIF 通过 libavif metadata API 保留 ICC/EXIF。JPEG/PNG 解码旋正后把 EXIF orientation 改写为 1。
+- [x] **代际损失防护**:对 JPEG/AVIF/lossy WebP 源再次输出有损格式时按 source bpp 分级要求最低收益(2%/3%/5%/8%),收益不足计 skipped;VP8L lossless WebP 不触发。
+- [x] 结果缓存(设置哈希 + 文件 blake3 哈希)跳过已优化:默认开启,命中时复用已有输出;缓存只记录 hash/size,不缓存图片内容。
+- [x] 高级参数面板(AVIF speed/subsample、WebP near_lossless/sharp_yuv、MozJPEG trellis 等):已接 core/Tauri/前端设置持久化。
+- [x] ⚠️ **不做**:JPEG XL(评审一致,过早);PNG 有损限色仅标「实验性」,PNG 默认仍是 oxipng 无损。
+- [x] **CI 进阶**:npm license audit、Tauri build smoke test、`cargo-about` 自动生成校验、依赖树 GPL/AGPL/LGPL 拦截、GitHub Actions 干净 Linux 冒烟。
+
+### 图像管线后续增强路线
+
+- [x] **Metadata fidelity v2 第一批**:JPEG/PNG/WebP 已支持 XMP raw packet 默认剥离/开启保留;不新增依赖,不引入 GPL/AGPL/LGPL。PNG 当前只保留未压缩 `iTXt` XMP,AVIF XMP 暂未接入。
+- [x] **AVIF 真无损 guardrail 第一批**:core 明确暴露 `AVIF_LOSSLESS_SUPPORTED=false` 并测试 AVIF 不进入 `LOSSLESS_FORMATS` / 能力矩阵。rav1e 后端当前不把 `quality=100` 冒充真无损。
+- [ ] **AVIF 真无损启用尖刺**:若后续切换/补充 aom 或 svt-av1 后端,再验证 libavif identity matrix、quantizer、chroma/subsample 与 alpha 组合;只有做到像素级可逆后才把 AVIF 加进 `LOSSLESS_FORMATS` / 能力矩阵。
+- [ ] **色彩管线 v2**:把 `ImageData` 从 RGBA8 升级为 `PixelBuffer { U8, U16, F32 }` 一类枚举,再做 ICC transform、线性空间 resize、16-bit/HDR 保真;不得在 RGBA8 管线上假装完成色彩管理。
+- [ ] **语义级 metadata 模块**:在 raw passthrough 之外,评估 XMP orientation/IPTC/EXIF MakerNote 的解析/改写策略与测试 corpus;优先保证旋正后不会留下会导致二次旋转的语义字段。
+- [ ] **HEIC/helper metadata passthrough**:Linux/Windows 外部 helper 第一版只 decode 到 PNG/RGBA,不承诺 HEIC 原始元数据;若做插件 v2,需要单独定义 sidecar metadata 协议与 LGPL helper 合规包。
+- [x] **质量 heuristics 第一批**:core 新增 PNG 中 JPEG 8×8 网格 hint 与自动质量最大评分次数 guardrail;Tauri 代际损失防护在用户启用时把这类 PNG 作为有损来源处理。
+- [ ] **平台质量 benchmark**:补 AVIF/WebP 在 Linux/macOS/Windows/arm64 上的真实耗时、默认 speed/method 复核和超时策略。
 
 ---
 
@@ -144,12 +158,20 @@
 > 评审一致:个人/小团队不要四渠道并行。先 Linux 直发,验证需求后逐步上 macOS / Windows 商店。
 
 **v1(Linux):**
-- [ ] CI 矩阵:Linux × **amd64 + arm64**;C 工具链 NASM + cmake/meson/ninja(见 ENGINE.md §4)
-- [ ] 打包:**.deb(Debian/Ubuntu)+ .rpm(Fedora)+ AppImage**;注意各发行版 **webkit2gtk / glibc 版本差异**
-- [ ] **Flathub**:Flatpak manifest + **文件 portal**(P0.5 已验证目录授权抽象);离线构建用 cargo vendor + 预构建前端产物;**Flathub 主包不含 HEIC**,可选插件需另做 Flatpak extension/外部 helper 可执行性验证
-- [ ] 自动更新(AppImage 用 updater;Flatpak 由 Flathub 托管)
+- [x] **CI 矩阵第一批**:GitHub Actions Tauri build smoke 改为 Linux **amd64 + arm64** 原生 runner;继续跑 C 工具链预检(NASM + cmake/meson/ninja)并上传 debug `.deb` artifact。
+- [x] **CI/release 第二批**:新增 Linux release workflow(tag `v*`/手动触发),在 amd64 + arm64 上构建 release `.deb/.rpm/AppImage` 并上传 artifact;CI debug `.deb` 构建后会安装并 `xvfb-run` 启动 smoke。
+- [x] **CI 矩阵扩展**:release workflow 在 amd64 + arm64 构建后跑 Docker/runtime smoke matrix:Ubuntu `.deb`、Debian `.deb`、Fedora `.rpm`、Ubuntu AppImage;脚本支持 `xvfb-run` 与裸 `Xvfb`,AppImage 使用 extract-and-run 规避容器 FUSE 缺失。
+- [x] **打包入口第一批**:新增 `pnpm run release:linux`/`release:linux:debug(:all)` 与 artifact verifier;正式 release 入口显式构建/校验 `.deb + .rpm + AppImage`,debug smoke 默认只打 `.deb`。
+- [x] **打包元数据/校验第二批**:release 脚本先清理旧 bundle,artifact verifier 校验版本、`.deb` 依赖、包内二进制和 `.desktop` 元数据;`.desktop` 已补 `Graphics;Photography;` 分类;release 会生成 `SHA256SUMS`。
+- [x] **打包实测入口**:**.deb(Debian/Ubuntu)+ .rpm(Fedora)+ AppImage** 干净发行版安装/启动 smoke 已接入 `pnpm run release:linux:smoke:docker`;安装包内真实转换 smoke 已通过隐藏 `IMGCONVERT_PACKAGE_CONVERT_SMOKE=1` 二进制入口接入 Docker matrix。
+- [x] **Linux Release Candidate 实测闭环**:本机 `pnpm run release:linux` 生成 `.deb/.rpm/AppImage + SHA256SUMS`;artifact verifier 解包检查 `.deb` 与 AppImage 的二进制/desktop/GLIBC/根 symlink,AppImage scrub 移除 deny-list 系统库;Docker matrix 实测 Ubuntu `.deb`、Debian 13 `.deb`、Fedora `.rpm`、Ubuntu AppImage 启动均通过。
+- [x] **Flathub 最后一公里闭环**:Flatpak manifest + desktop/metainfo + `release:flatpak:verify` 已落地;manifest 不申请 host/home filesystem,主包默认 `IMGCONVERT_DISABLE_EXTERNAL_CODECS=1`,不含 HEIC。manifest 已从仓库根 `dir` source 改为 `release:flatpak:prepare` 生成的 release archive,并在 archive 内带 vendored Corepack/pnpm 与 Cargo/npm inputs;本地/CI 用 `path:` source,Flathub PR 可用 `--source-url=` 切换为 release `url:` source。`pnpm run release:flatpak:smoke` 已完成本机真实 `flatpak-builder` 构建、user install、`flatpak-builder --run` 和 `flatpak run` 包内转换 smoke;manifest 已升到 GNOME 50 runtime,AppStream metadata license 改为 `CC0-1.0`,aarch64 Flatpak 的 `libdav1d-sys` Meson cross file 在 prepare 阶段 patch 并同步 Cargo checksum。可选 HEIC 插件需另做 Flatpak extension/外部 helper 可执行性验证。
+- [x] **自动更新基础**:AppImage/.deb/.rpm release 产物生成 `SHA256SUMS`;Flatpak 更新由 Flathub 托管。真正的 in-app AppImage updater 需要签名密钥和更新端点,留到发布账号/密钥确定后接 Tauri updater,不在主功能开发阶段硬编码占位密钥。
 
 **后续阶段(留门,不阻塞 v1):**
+- [x] **macOS/Windows 发布护栏第一批**:新增 `release:platform:check` / `release:macos:check` / `release:windows:check` / `release:store-env:check`,静态校验发布元数据、平台图标、Apache-2.0 许可证和 store build 的 `IMGCONVERT_DISABLE_EXTERNAL_CODECS=1` 外部 helper 禁用机制。
+- [x] **macOS 打包/沙盒护栏第一批**:新增 `tauri.macos.conf.json`、`tauri.macos.mas.conf.json`、direct/MAS entitlements plist 与 `packaging/macos/README.md`;`release:macos:check` 会验证直发 hardened runtime、MAS App Sandbox、用户选择文件读写与 app-scoped bookmark entitlement,并拒绝 broad temporary entitlement。
+- [x] **Windows 打包/Store 护栏第一批**:新增 `tauri.windows.conf.json` 与 `packaging/windows/README.md`;`release:windows:direct:check` 校验 direct installer 不允许降级、WebView2 silent embedded bootstrapper、最低 WebView2 版本、稳定 WiX `upgradeCode` 和 NSIS current-user 默认安装;Store preflight 继续强制 `IMGCONVERT_DISABLE_EXTERNAL_CODECS=1`,真实 MSIX/`runFullTrust`/Partner Center 留到 Windows 实测阶段。
 - [ ] **macOS**:直分发 `.dmg`(Developer ID + notarytool 公证)起步 → 验证后再 MAS(App Sandbox + security-scoped bookmarks + Apple Distribution + provisioning + `.pkg`);HEIC 完整;AVIF 跑 arm64 实测后定后端
 - [ ] **Windows**:直分发 `.msi/.exe` 起步 → 后 MS Store(MSIX + `runFullTrust`);HEIC **仅解码**(WIC + 运行时探测 HEVC 扩展,缺失则引导安装,**不承诺开箱即用**)。可选免费 HEIC helper 作为主程序外的 decode-only 插件研究,不进主包依赖树。
 - [ ] ⚠️ **架构前提(全程保持)**:主程序核心无子进程、Apache-2.0、依赖树无 GPL/AGPL/LGPL、文件访问走显式授权抽象 → 这样 v1 之后上商店不返工。P1.5 HEIC helper 是主包外直发/用户安装增强,商店构建默认禁用。

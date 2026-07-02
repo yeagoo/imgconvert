@@ -5,6 +5,486 @@
 
 ---
 
+## 2026-07-02 — 图像管线后续增强:质量 heuristics 第一批 + AVIF lossless guardrail
+
+Codex 继续推进 P2/P3 后的图像管线增强,本批先落地可自动测试、无新增许可风险的守门项:
+
+- **AVIF 真无损负向 guardrail**:`imgconvert-core` 新增 `AVIF_LOSSLESS_SUPPORTED=false` 常量和单测,继续保证 AVIF 不进入 `LOSSLESS_FORMATS` / capabilities lossless。当前 rav1e 后端没有完成像素级可逆验证,因此不会用 `quality=100` 冒充真无损。
+- **自动质量耗时上限**:core 新增 `AUTO_QUALITY_MAX_SCORING_EVALUATIONS=7`,并给二分搜索评分次数加测试。JPEG 最坏 6 次 SSIMULACRA2 评分;WebP 额外比较一次 lossless 候选。搜索失败回退最高质量时复用已评估的 max 候选,避免重复编码/评分。
+- **假无损 PNG hint**:core 新增 `detect_lossy_artifacts()` 第一版,检测 PNG 中明显 JPEG 8x8 网格痕迹。Tauri 代际损失防护在 `generationLossProtection=true` 时把这类 PNG 当作有损来源处理;该结果只是保守 hint,不改变默认可读/可写格式矩阵。
+- **诊断暴露**:`runtime_diagnostics()` 增加自动质量最大评分次数,便于后续 UI/日志展示。
+
+仍未完成:
+
+- 色彩管线 v2(`PixelBuffer { U8, U16, F32 }`、ICC transform、线性 resize、16-bit/HDR)仍未开始。
+- 语义级 metadata 模块、HEIC/helper metadata sidecar、AVIF/WebP 平台 benchmark 仍在后续项。
+
+---
+
+## 2026-07-02 — 图像管线后续增强规划 + XMP 透传第一批
+
+Codex 梳理 P2/P3 后的图像管线剩余增强项后,先落地一批低风险、Linux 可验证、无新增许可风险的 metadata fidelity 增强:
+
+- **后续方案拆分**:ROADMAP 新增“图像管线后续增强路线”,把 AVIF 真无损、`8/16/float` 像素表示 + ICC transform/线性 resize、语义级 metadata、HEIC/helper metadata passthrough 和质量 heuristics 拆成独立后续项。当前不把 RGBA8 管线伪装成像素级色彩管理。
+- **XMP raw packet 透传**:`imgconvert-core` 的 `ImageData` / `Metadata` 增加 `xmp` 字段。JPEG 支持 APP1 Adobe XMP namespace,PNG 支持未压缩 `iTXt XML:com.adobe.xmp`,WebP 支持 `XMP ` chunk 与 VP8X XMP flag。默认仍剥离;只有 `preserveMetadata=true` 才写回。
+- **容器替换语义**:PNG/WebP 写回时会替换旧 XMP chunk,避免重复堆叠;WebP 重建 VP8X 时按当前输出 alpha 与 metadata 重新置位 ICC/EXIF/XMP flags。
+- **边界保持清晰**:AVIF 仍只保留 ICC/EXIF,XMP 暂不接入;XMP 只做 raw packet 透传,不解析 XML,不改写 XMP 内可能存在的 orientation/IPTC/编辑历史字段;JPEG extended XMP 分片与 PNG 压缩 `iTXt` XMP 暂不保留。
+- **测试覆盖**:core 单测扩展 JPEG/PNG/WebP metadata 默认剥离/开启保留断言,并新增 PNG 源跨 JPEG/PNG/WebP 的 XMP 保留测试。
+
+验证:
+
+- `cargo +1.96.0 fmt --all -- --check`:通过。
+- `cargo +1.96.0 test -p imgconvert-core`:通过。
+- `cargo +1.96.0 clippy -p imgconvert-core -- -D warnings`:通过。
+- `pnpm run format:check`:通过。
+- `pnpm run check`:通过。
+
+---
+
+## 2026-07-02 — P3 review 修复:Flatpak 真实运行闭环 + Display P3 ICC 端到端测试
+
+Codex review Flatpak 与色彩保真剩余缺口后补齐两项可复跑护栏:
+
+- **Flatpak 真实运行 smoke**:新增 `scripts/smoke-flatpak-runtime.mjs` 与 `pnpm run release:flatpak:smoke`。脚本会准备 source archive、添加缺失的 Flathub user remote、用 `flatpak-builder --user --install-deps-from=flathub --install` 构建/安装,再分别通过 `flatpak-builder --run` 和安装后的 `flatpak run --user --command=imgconvert` 运行隐藏转换 smoke。Flatpak 主包仍设置 `IMGCONVERT_DISABLE_EXTERNAL_CODECS=1`,不启用 HEIC/helper。
+- **review 修复:Flatpak runtime EOL**:本机 smoke 首跑时 Flathub 提示 `org.gnome.Sdk 48` 已于 2026-03-24 EOL;manifest 升到当前可解析的 GNOME `50` runtime,避免发布包建立在过期 runtime 上。
+- **review 修复:AppStream metadata license**:真实 Flatpak build 的 `appstreamcli compose` 拒绝 `<metadata_license>Apache-2.0</metadata_license>`;metainfo 改为 AppStream 常用的 `CC0-1.0` 元数据许可,`project_license` 继续保持 `Apache-2.0`。
+- **Display P3 / ICC 端到端测试**:`imgconvert-core` 新增自生成 Display P3 ICC fixture,覆盖 P3 PNG 输入在 `preserveMetadata=true` 下转换到 JPEG/PNG/WebP/AVIF 后 ICC 逐字节保留。PNG/WebP lossless 路径同时验证像素不变;JPEG/AVIF 验证尺寸和 ICC 元数据保真。
+- **文档清理**:更新 Flatpak README 与 ENGINE,删除“发行版 runtime smoke 仍未覆盖 Debian/Ubuntu/Fedora”的过期表述,明确当前 Display P3 范围是 ICC 元数据保真而非像素级色彩管理。
+
+---
+
+## 2026-07-02 — P3 Linux 发布最后一公里:Flathub source bundle + 包内转换 smoke
+
+Codex review Linux/Flathub 发布链路后补齐两个发布前缺口:
+
+- **Flathub source bundle**:`packaging/flatpak/com.ivmm.imgconvert.yml` 不再使用仓库根 `type: dir` source,改为 `type: archive` release source。新增 `pnpm run release:flatpak:prepare`,会生成 `target/flatpak/sources/imgconvert-<version>-source.tar.gz`,把 pnpm 自身通过 Corepack vendor 到 `.flatpak-vendor/corepack.tgz`,把 Cargo 依赖 vendor 到 `.flatpak-vendor/cargo`,把 pnpm 包 fetch 到 `.flatpak-vendor/pnpm-store`,并回写 manifest 的 archive `sha256`。本地/CI 默认写 `path:` source;Flathub PR 可在发布该 archive 后用 `--source-url=https://.../imgconvert-<version>-source.tar.gz` 切换为可下载 `url:` source。
+- **Flatpak guardrail 升级**:`release:flatpak:verify` 现在拒绝 `type: dir`、host/home filesystem、HEIC helper/libheif/x265 和在线 `corepack prepare pnpm@...`,并要求 node/rust SDK extension、offline Corepack cache、offline pnpm install、offline Cargo build、合法 archive `path:`/`url:` source 和 store 外部 codec 禁用环境。
+- **包内真实转换 smoke**:安装后的 `imgconvert` 二进制新增隐藏入口 `IMGCONVERT_PACKAGE_CONVERT_SMOKE=1`。该入口不启动 GUI,会用真实 `imgconvert-core` 链路把内置 16×16 PNG 转成 JPEG/WebP/PNG/AVIF,验证 magic 与尺寸后退出。
+- **Linux package smoke 升级**:`scripts/smoke-linux-package-install.mjs` 增加 `--convert-smoke`;Docker matrix 默认在 GUI 启动 smoke 后继续跑包内真实转换 smoke。AppImage 路径同样使用 `APPIMAGE_EXTRACT_AND_RUN=1`。
+
+限制:
+
+- 当前容器缺 `flatpak-builder`/`flatpak`,因此本批次完成 manifest/source bundle/guardrail 和二进制转换 smoke 的本机验证;真实 Flatpak build/install/portal runtime smoke 仍需在安装 Flatpak 工具的 Linux runner 上跑。
+
+---
+
+## 2026-07-02 — P3 后续平台:Windows 打包与 Store 护栏第一批
+
+Codex review 后补上 Windows 平台发布留门里的实际配置检查,避免 `release:windows:check` 只验证图标和 store 环境开关:
+
+- **Windows 直发配置**:新增 `src-tauri/tauri.windows.conf.json`,面向 `.msi`/NSIS 直发路线。配置锁定 `allowDowngrades=false`、`digestAlgorithm=sha256`、silent `embedBootstrapper` WebView2 安装、最低 WebView2 版本、稳定 WiX `upgradeCode` 和 NSIS current-user 默认安装。
+- **guardrail 升级**:`scripts/check-platform-release-guardrails.mjs` 的 Windows direct 分支现在会读取 `tauri.windows.conf.json` 并验证上述安装/升级边界;新增 `release:windows:direct:check` 便于 CI 分批定位。
+- **MS Store 留门**:新增 `packaging/windows/README.md`,明确 Store 仍需 Windows runner、MSIX、`runFullTrust`、Partner Center 和真实安装 smoke;`release:windows:store:check` 继续要求 `IMGCONVERT_DISABLE_EXTERNAL_CODECS=1`,防止外部 HEIC helper 自动发现进入商店构建。
+
+验证:
+
+- `pnpm run release:windows:direct:check`:通过。
+- `IMGCONVERT_DISABLE_EXTERNAL_CODECS=1 pnpm run release:windows:store:check`:通过。
+- 未设置 `IMGCONVERT_DISABLE_EXTERNAL_CODECS` 时 `pnpm run release:windows:store:check` 按预期失败。
+- `pnpm run release:windows:check`、`pnpm run release:platform:check`、`IMGCONVERT_DISABLE_EXTERNAL_CODECS=1 pnpm run release:store-env:check`:通过。
+- `pnpm tauri build --ci --debug --no-bundle --config src-tauri/tauri.windows.conf.json`:通过,确认新增 Windows 配置可被 Tauri CLI 合并/解析。
+
+限制:
+
+- 本批次不等同于完成 Windows 发布;真实 `.msi`/NSIS 构建、代码签名、MSIX 打包、MS Store 提交、WIC HEIC 运行时探测和 Windows 真机 smoke 仍需在 Windows runner/真机上完成。
+
+---
+
+## 2026-07-02 — P3 后续平台:macOS 打包与沙盒护栏第一批
+
+Codex 在 Linux v1 RC 后继续推进后续平台发布留门,先完成 macOS 可静态验证的打包与沙盒配置骨架:
+
+- **macOS 直发配置**:新增 `src-tauri/tauri.macos.conf.json`,Tauri 在 macOS 构建时会自动合并该平台配置;默认使用 hardened runtime 与 `entitlements.macos.direct.plist`,不启用 App Sandbox,面向 `.dmg` / Developer ID / notarization 直发路线。
+- **MAS 配置骨架**:新增 `src-tauri/tauri.macos.mas.conf.json` 与 `entitlements.macos.mas.plist`;MAS entitlements 只声明 App Sandbox、用户选择文件读写和 app-scoped bookmarks,不加 broad filesystem、network server 或 temporary exception entitlement。
+- **guardrail 升级**:`scripts/check-platform-release-guardrails.mjs` 现在会读取 macOS 平台配置和 entitlements plist,验证直发/MAS 两套权限边界;新增 `release:macos:direct:check`、`release:macos:store:check`、`release:windows:store:check`。
+- **文档**:新增 `packaging/macos/README.md`,记录直发 `.dmg` 和 MAS candidate 的本地 preflight/构建命令。MAS build 必须设置 `IMGCONVERT_DISABLE_EXTERNAL_CODECS=1`,保证外部 HEIC helper 自动发现被编译期关闭。
+
+验证:
+
+- `pnpm run release:macos:check`:通过。
+- `IMGCONVERT_DISABLE_EXTERNAL_CODECS=1 pnpm run release:macos:store:check`:通过。
+- 未设置 `IMGCONVERT_DISABLE_EXTERNAL_CODECS` 时 `pnpm run release:macos:store:check` 按预期失败。
+
+限制:
+
+- 本批次不等同于完成 macOS 发布;真实 `.dmg` 构建、Developer ID 签名、公证、MAS provisioning、security-scoped bookmark runtime shim 和 HEIC ImageIO 沙盒实测仍需在 macOS runner/真机上完成。
+
+---
+
+## 2026-07-02 — P3 review 修复 + Linux 发布收尾
+
+Codex review P3 第一批发布链路后继续推进 Linux 发布闭环:
+
+- **review 修复:stale artifact**:新增 `scripts/clean-linux-bundles.mjs`,release/debug release 脚本会先清理对应 bundle 目录,避免 artifact verifier 吃到旧包误判通过。
+- **review 修复:Linux desktop metadata**:`tauri.conf.json` 补 `publisher`/`homepage`/`licenseFile`/`category`/长短描述/Linux deb section,重新生成的 `.desktop` 已有 `Categories=Graphics;Photography;`,`.deb` 已有 `Homepage`、`Section: graphics` 和长描述。
+- **artifact verifier 升级**:`scripts/check-linux-bundle-artifacts.mjs` 不再只校验非空文件;现在会校验版本号、`.deb` 依赖字段、包内 `/usr/bin/imgconvert`、`ImgConvert.desktop`、desktop entry 的 `Name/Type/Exec/Categories`,并对 rpm/AppImage 做基础结构检查。`.deb`/`.rpm` 被选中时必须有 `dpkg-deb`/`rpm` 检查工具,避免“没检查也通过”。
+- **release workflow**:新增 `.github/workflows/release-linux.yml`,支持 tag `v*` 和手动触发,在 Linux amd64/arm64 runner 上构建 release `.deb/.rpm/AppImage` 并上传 artifact。
+- **安装启动 smoke**:新增 `scripts/smoke-linux-package-install.mjs`。CI/debug `.deb` 构建后会安装 package 并启动一次;脚本支持 Docker 模式,且启动层同时支持 `xvfb-run` 和裸 `Xvfb`,Fedora 容器不再依赖 Debian 专属 wrapper。AppImage smoke 设置 `APPIMAGE_EXTRACT_AND_RUN=1`,避免 Docker/FUSE 缺失导致误报。
+- **发行版 runtime matrix**:新增 `scripts/smoke-linux-package-matrix.mjs` 与 `pnpm run release:linux:smoke:docker`,正式 Linux release workflow 会在 amd64/arm64 上跑 Ubuntu `.deb`、Debian `.deb`、Fedora `.rpm`、Ubuntu AppImage smoke。
+- **release checksums**:新增 `scripts/generate-linux-release-checksums.mjs`;`pnpm run release:linux` 会生成 `src-tauri/target/release/bundle/SHA256SUMS`,workflow 会随 artifact 上传。
+- **Flatpak 第一版**:新增 `packaging/flatpak/com.ivmm.imgconvert.yml`、desktop/metainfo 与 `pnpm run release:flatpak:verify`。manifest 不申请 host/home filesystem,主包设置 `IMGCONVERT_DISABLE_EXTERNAL_CODECS=1`,不捆绑 HEIC/helper;Flathub 正式提交仍需把本地 `dir` source 换成 release tarball + vendored Cargo/npm inputs。
+- **review 修复:AppImage 系统库冲突**:发现 Tauri AppImage 会捆入 `libgcrypt.so.20`,在 Ubuntu 24.04 容器中与系统 `libgpg-error` 组合触发符号不匹配。新增 `scripts/scrub-linux-appimage.mjs`,release/debug all 打包后会删除 deny-list 系统库并用 Tauri 缓存的 `linuxdeploy-plugin-appimage.AppImage` 重新打包。
+- **review 修复:AppImage symlink 防回归**:repack 复制 AppDir 时使用 `verbatimSymlinks`,避免 `.DirIcon`/`ImgConvert.desktop`/`imgconvert.png` 被改写成宿主机绝对 symlink。artifact verifier 现在会解包 AppImage,拒绝 host-absolute root symlink,拒绝捆绑 `libgcrypt.so.20`,并复用通用 Linux bundle 检查覆盖 `usr/bin/imgconvert`、GLIBC 基线和 `.desktop` 元数据。
+- **review 修复:Docker runtime smoke**:AppImage Docker smoke 先复制只读挂载文件再 `chmod`,补装 `libasound2t64`/`libasound2`,并支持 `IMGCONVERT_DOCKER_APT_MIRROR` 覆盖 Ubuntu apt 源以降低本机实测波动。Docker 不可直接访问时脚本会自动尝试 `sudo -n docker`。
+- **下一阶段平台发布护栏**:新增 `scripts/check-platform-release-guardrails.mjs` 与 `release:platform:check` / `release:macos:check` / `release:windows:check` / `release:store-env:check`。该脚本静态校验 macOS/Windows 发布元数据、平台图标、Apache-2.0 许可证和“商店构建禁外部 codec/helper”的 build-time 机制;`--require-store-env` 可在实际 store build 前强制要求 `IMGCONVERT_DISABLE_EXTERNAL_CODECS=1`。
+
+验证:
+
+- `pnpm run release:linux:debug`:通过,重新生成 debug `.deb` 并通过增强 artifact verifier。
+- `pnpm run release:flatpak:verify`:通过。
+- `node scripts/generate-linux-release-checksums.mjs --profile=debug --bundles=deb`:通过。
+- `pnpm run release:linux`:通过,生成 release `.deb`/`.rpm`/AppImage 与 `SHA256SUMS`;AppImage scrub 日志确认移除 `libgcrypt.so.20`。
+- `pnpm run release:linux:verify`:通过,增强 verifier 校验三类 release artifact。
+- `IMGCONVERT_DOCKER_APT_MIRROR=http://mirrors.aliyun.com/ubuntu-ports pnpm run release:linux:smoke:docker -- --timeout=8`:通过,完整覆盖 Ubuntu `.deb`、Debian 13 `.deb`、Fedora `.rpm`、Ubuntu AppImage。
+- `pnpm run release:platform:check`:通过。
+- `IMGCONVERT_DISABLE_EXTERNAL_CODECS=1 pnpm run release:store-env:check`:通过;未设置该环境变量时按预期失败。
+- `dpkg-deb -f`:确认 `Version: 0.1.0`、`Section: graphics`、`Homepage: https://github.com/yeagoo/imgconvert`、运行时依赖 `libwebkit2gtk-4.1-0, libgtk-3-0`。
+- `dpkg-deb -x`:确认 `.desktop` 中 `Categories=Graphics;Photography;`。
+
+## 2026-07-01 — P2 review 修复 + P3 Linux 发布第一批
+
+Codex 对 P2 高级压缩收尾做了一轮后端 review,并启动 P3 Linux release 闭环:
+
+- **P2 缓存策略修复**:`result_cache_key()` 升级到 v2,自动质量启用时把 `qualityFloor` 对应的搜索下限纳入 key,避免同一质量上限但不同 floor 复用错误输出。
+- **P2 策略一致性修复**:结果缓存命中后也会复用 `skip-if-larger` 与代际损失防护检查,不再绕过当前用户策略。
+- **测试覆盖**:Tauri 后端新增缓存 key/floor 差异测试与缓存候选策略检查测试。
+- **P3 发布入口**:新增 `pnpm run release:linux` / `release:linux:debug` / `release:linux:debug:all` / `release:linux:verify`;正式 release 入口显式构建并校验 `deb,rpm,appimage` 三类 Linux bundle artifact,debug smoke 默认只打 `.deb` 以避免 debug rpm/AppImage 后处理过慢。
+- **P3 CI 第一批**:GitHub Actions 的 Tauri build smoke 改为 Linux `amd64 + arm64` 矩阵,使用原生 runner 构建 debug `.deb` 并上传 artifact。
+
+## 2026-07-01 — P2 收尾:自动质量、代际防护、缓存与高级参数
+
+Codex 完成 P2 剩余高级压缩功能项:
+
+- **自动质量**:core 新增 `convert_auto_quality()`。仅 JPEG/WebP 启用,用 `ssimulacra2`(BSD-2-Clause,`default-features=false`)按 step≈4 二分搜索达到目标分的最低质量;自动质量不低于格式质量下限,小于 8×8 的图片回退固定质量。WebP 会把 lossless 候选纳入比较,若更小则选 lossless。
+- **代际损失防护**:Tauri 对 JPEG/AVIF/lossy WebP 源再次输出有损格式时,按 source bpp 分级要求最低体积收益(默认 2%/3%/5%/8%);收益不足计 skipped,避免有损源无意义重压。VP8L lossless WebP 不触发该保护。
+- **结果缓存**:新增 `blake3` 设置哈希 + 源文件哈希缓存。缓存默认开启,只记录已有输出的 hash/size,命中时直接返回结果;不把图片内容写入缓存目录。
+- **PNG 实验性限色**:新增 `color_quant`(MIT)限色路径,默认关闭;开启后先 NeuQuant 映射 RGBA,再输出普通 PNG 并继续走 oxipng。继续禁止 `imagequant`/GPL。
+- **高级参数面板**:core/Tauri/前端贯通 AVIF subsample(4:4:4/4:2:0)、WebP near-lossless/sharp YUV、MozJPEG trellis scans,设置持久化并纳入多候选去重与缓存 key。
+- **CI 进阶**:GitHub Actions 增加 Tauri Linux debug build smoke;既有 npm license/audit、cargo-deny、cargo-about 生成校验继续作为 P2/P3 guardrail。
+
+验证:
+
+- `cargo test -p imgconvert-core`:通过(32 tests)。
+- `cargo +1.96.0 test --manifest-path src-tauri/Cargo.toml`:通过(78 tests)。
+- `pnpm run check`:通过。
+- `pnpm run test`:通过(4 tests)。
+
+---
+
+## 2026-07-01 — P1.5 HEIC 平台收尾 review 修复
+
+Codex 修复 P1.5 HEIC 平台 review 提出的边界问题:
+
+- **平台开关收窄**:外部 HEIC helper 自动发现从 `Unix + Windows` 收敛为 `Linux + Windows`;macOS 不再进入 XDG/Library helper 探测,继续留给 P3 的 ImageIO / App Sandbox 验证。
+- **Windows 临时目录**:HEIC helper 解码 PNG 的工作目录改到 `%LOCALAPPDATA%\ImgConvert\Temp\heic\imgconvert-heic-*`,不再使用全局 temp 根目录;Unix 仍使用 0700 私有临时目录。
+- **Windows 覆盖**:新增 Windows-only 单测覆盖 `.exe` helper 要求、LocalAppData codecs PATH 探测、大小写不敏感且分段安全的路径前缀判断、工作目录落点;CI 新增 `windows-latest` 的 `external_codecs` 定向测试。
+
+---
+
+## 2026-07-01 — P1.5 HEIC 平台收尾:Windows 外部 helper
+
+Codex 补齐 P1.5 HEIC 平台剩余的外部 helper 路径:
+
+- **Windows helper 启用**:外部 codec/helper 发现从 Unix 扩展到 Windows;Windows 可通过用户手动选择 `imgconvert-heic-helper.exe`、manifest provider 或受信任 PATH 目录激活 decode-only HEIC 导入。
+- **Windows 信任边界**:manifest 自动发现加入 `%LOCALAPPDATA%\ImgConvert\codecs` 与 `%PROGRAMDATA%\ImgConvert\codecs`;自动发现只接受 canonical 后位于 Program Files、ProgramData/ImgConvert/codecs 或 LocalAppData/ImgConvert/codecs 下的目录。用户显式选择的 helper 可在其它位置,但仍必须是普通 `.exe` 文件,且调用不经过 shell。
+- **helper 名称**:系统/插件 PATH 探测新增 `imgconvert-heic-helper`,同时保留 Linux `heif-convert` / `heif-dec`。主程序仍不链接 libheif/libde265/x265,不把 LGPL/GPL 组件放入主依赖树。
+- **诊断 UI**:插件诊断文案增加 Windows 免费 helper 路线,强调 helper/provider 是 decode-only、单独分发、可被商店/Flatpak 构建禁用。
+- **阶段边界**:Windows WIC + HEIF/HEVC 扩展探测仍属于 P3 平台发布项;本批次只完成免费外部 helper 协议与信任模型,不承诺 HEIC 开箱即用。
+
+---
+
+## 2026-07-01 — P2 第五批:ICC/EXIF 元数据保真
+
+Codex 完成 P2 元数据保真的第一版容器闭环:
+
+- **默认隐私语义不变**:`preserveMetadata=false` 时 JPEG/PNG/WebP/AVIF 重新编码后仍显式剥离 ICC/EXIF;只有用户开启“保留元数据”才写回。
+- **core 容器手术**:JPEG 提取/写入 APP1 EXIF 与 APP2 ICC(含 1-based 分块重组);PNG 在 oxipng 之后 splice `iCCP`/`eXIf`;WebP 重写 RIFF chunk,必要时插入/更新 `VP8X` 并写 `ICCP`/`EXIF`;AVIF 走 libavif 的 ICC/EXIF metadata API。
+- **EXIF orientation 防双旋**:JPEG/PNG 解码经 image crate 真旋正像素后,保留的 EXIF orientation 改写为 1;WebP/AVIF 当前未做几何 transform,因此只保留原始 EXIF payload。
+- **Tauri/前端接通**:`ConvertOptions.preserveMetadata` 不再报“未实现”,经 `EncodeOptions.preserve_metadata` 传入 core;设置栏“保留元数据”开关启用并持久化。
+- **测试覆盖**:core 新增 JPEG/PNG/WebP/AVIF 元数据默认剥离、开启后逐字节保留、JPEG ICC 分块与管线跨格式保留测试;Tauri 映射测试覆盖 preserve flag。
+
+验证:
+
+- `cargo test -p imgconvert-core`:通过(28 tests)。
+- `cargo clippy -p imgconvert-core -- -D warnings`:通过。
+- `cargo +1.96.0 test --manifest-path src-tauri/Cargo.toml`:通过(72 tests)。
+- `cargo +1.96.0 clippy --manifest-path src-tauri/Cargo.toml -- -D warnings`:通过。
+- `pnpm run check`:通过。
+- `pnpm run deadcode`:通过。
+- `pnpm run test`:通过(4 tests)。
+- `pnpm run build`:通过。
+- `pnpm run e2e`:通过(Chromium Web 预览 smoke 1 test)。
+- `pnpm run license:check`:通过,未发现 GPL/AGPL/LGPL,第三方许可证清单未过期。
+- `cargo deny check bans sources`:通过;Tauri 依赖树重复版本仍只输出 warning。
+- `cargo fmt --check`、`cargo +1.96.0 fmt --manifest-path src-tauri/Cargo.toml --check`、`pnpm run format:check`、`git diff --check`:通过。
+- `timeout 25s xvfb-run -a pnpm tauri dev`:启动链路到达 `Running target/debug/imgconvert` 后按预期由 timeout 结束。
+
+---
+
+## 2026-07-01 — P0.5 技术风险闭环:工具链/授权路径/并发诊断
+
+Codex 收口 P0.5 剩余技术风险的最小可验证闭环:
+
+- **原生工具链预检**:新增 `scripts/check-native-toolchain.mjs` 与 `pnpm run toolchain:check`,检查 cmake / meson / ninja,并仅在 x86/x86_64 检查 NASM;脚本接入 `quality:rust`,缺依赖时给明确安装提示。
+- **授权路径边界**:新增 `src-tauri/src/access.rs`,把用户选择路径、输出目录和剪贴板临时文件统一收口为授权路径 grant。该层不强制 canonicalize,为 Flatpak portal 映射路径和 macOS security-scoped bookmark 生命周期留接口。
+- **并发诊断**:`imgconvert-core` 新增 `AVIF_ENCODER_MAX_THREADS=1` 常量并用于 libavif encoder;Tauri 新增 `runtime_diagnostics()` 命令暴露默认并发、内存预算、RGBA 工作集倍率和 AVIF 内部线程上限。
+- **测试稳定性**:HEIC selected-helper 相关测试增加串行锁,避免并发测试共享全局 helper 白名单导致偶发 provider 判定漂移。
+- **阶段边界**:P0.5 已完成本机可验证 guardrail;Debian/Ubuntu/Fedora × amd64/arm64、Flatpak portal runtime smoke、macOS bookmark shim 和 Apple Silicon AVIF speed 仍属于 P3/平台阶段实测。
+
+验证:
+
+- `pnpm run toolchain:check`:通过(linux/arm64;cmake 3.31.6,meson 1.7.0,ninja 1.12.1;NASM 按 arm64 跳过)。
+- `pnpm run quality:frontend`:通过。
+- `pnpm run quality:rust`:通过(core 23 tests;src-tauri 71 tests)。
+- `cargo test -p imgconvert-core`:通过(23 tests)。
+- `cargo +1.96.0 test --manifest-path src-tauri/Cargo.toml`:通过(71 tests)。
+- `pnpm run e2e`:通过(Chromium Web 预览 smoke 1 test)。
+- `pnpm run quality:security`:通过;`cargo deny check bans sources` 仍有 Tauri 依赖树重复版本 warning,但不阻断。
+- `pnpm run format:check`:通过。
+- `git diff --check`:通过。
+- `timeout 25s xvfb-run -a pnpm tauri dev`:启动链路到达 `Running target/debug/imgconvert` 后按预期由 timeout 结束。
+
+---
+
+## 2026-07-01 — P2 第四批:质量下限阈值
+
+Codex 完成全局有损/无损开关与每格式质量下限的最小闭环:
+
+- **前端设置**:保留现有全局“无损压缩”开关,继续仅对 PNG/WebP 生效;JPEG/WebP/AVIF 在格式参数区新增“最低质量”滑块。
+- **阈值语义**:质量下限按 `30..=100` 生效,低于 30 视为关闭;默认下限为 30,避免极低质量误操作,但后端旧 IPC 缺字段时按关闭处理。
+- **Tauri 映射**:`ConvertOptions` 新增 `quality_floor`(camelCase:`qualityFloor`);进入 core 前对 JPEG/WebP/AVIF 的有损质量做 `max(quality, floor)` clamp。PNG 和 WebP 无损模式不应用有损质量下限。
+- **自动质量留门**:后续 `ssimulacra2` 二分搜索必须以该下限作为最低质量边界。
+
+验证:
+
+- `pnpm run check`:通过。
+- `pnpm run test`:通过(4 tests)。
+- `pnpm run quality:frontend`:通过。
+- `pnpm run quality:rust`:通过(core 23 tests;src-tauri 68 tests)。
+- `cargo +1.96.0 test --manifest-path src-tauri/Cargo.toml`:通过(68 tests)。
+- `cargo test -p imgconvert-core`:通过(23 tests)。
+- `cargo +1.96.0 clippy --manifest-path src-tauri/Cargo.toml -- -D warnings`:通过。
+- `cargo clippy -p imgconvert-core -- -D warnings`:通过。
+- `pnpm run e2e`:通过(Chromium Web 预览 smoke 1 test)。
+- `pnpm run format:check`:通过。
+- `git diff --check`:通过。
+- `timeout 25s xvfb-run -a pnpm tauri dev`:启动链路到达 `Running target/debug/imgconvert` 后按预期由 timeout 结束。
+
+---
+
+## 2026-07-01 — P2 第三批:多候选取最小
+
+Codex 完成多候选取最小的第一版:
+
+- **core 能力**:新增 `convert_best_of(input, target, options)`。输入只解码一次,再用多个 `EncodeOptions` 编码候选竞争,返回体积最小的候选;原 `convert()` 保持单候选兼容。
+- **Tauri 候选生成**:`multi_candidate`(camelCase:`multiCandidate`)默认开启。JPEG 在 baseline/progressive 间竞争;PNG 在用户级别、相邻级别、默认 4、最高 6 间去重竞争;WebP 在用户 method、4、6 间竞争;AVIF 暂不加候选,避免慢编码成倍放大。
+- **语义边界**:候选不会偷偷改变 quality、lossless、目标格式或 AVIF speed;需要精确按单一参数输出时可在 UI 关闭“多候选取最小”。
+- **测试修复**:HEIC manifest helper 执行增加短暂重试,规避测试 helper 刚写入后 Linux 偶发 `Text file busy`。
+
+验证:
+
+- `cargo test -p imgconvert-core`:通过(23 tests)。
+- `cargo +1.96.0 test --manifest-path src-tauri/Cargo.toml`:通过(67 tests)。
+- `pnpm run quality:frontend`:通过。
+- `pnpm run quality:rust`:通过(core 23 tests;src-tauri 67 tests)。
+- `pnpm run quality:security`:通过;`cargo deny check bans sources` 仍有 Tauri 依赖树重复版本 warning,但不阻断。
+- `pnpm run e2e`:通过(Chromium Web 预览 smoke 1 test)。
+- `timeout 25s xvfb-run -a pnpm tauri dev`:启动链路到达 `Running target/debug/imgconvert` 后按预期由 timeout 结束。
+
+---
+
+## 2026-07-01 — P2 第二批:skip-if-larger / 永不变差
+
+Codex 完成 P2 的输出防变大闭环:
+
+- **Tauri 策略**:`ConvertOptions` 新增 `skip_if_larger`(camelCase:`skipIfLarger`),默认开启;core 编码完成后、写文件前比较候选输出大小与源文件大小,若候选不小于源文件则直接跳过写入。
+- **覆盖保护**:即使用户选择 overwrite,变大候选也不会替换已有输出文件;原地优化同样受保护。
+- **批量协议**:skip-if-larger 命中时通过既有 `FileSkipped` 事件计入 skipped,不会记为 failed;前端队列显示跳过原因和源/候选字节数。
+- **前端设置**:`SettingsBar` 新增默认开启的“跳过变大输出” switch;需要强制格式迁移时用户可以关闭。
+- **边界说明**:本批次只做单候选大小防护,不做多候选竞争;自动质量阶段的“省不到 2% 也跳过”阈值后续再接。
+
+验证:
+
+- `pnpm run quality:frontend`:通过。
+- `pnpm run quality:rust`:通过(core 21 tests;src-tauri 66 tests)。
+- `pnpm run quality:security`:通过;`cargo deny check bans sources` 仍有 Tauri 依赖树重复版本 warning,但不阻断。
+- `pnpm run e2e`:通过(Chromium Web 预览 smoke 1 test)。
+- `timeout 25s xvfb-run -a pnpm tauri dev`:按预期由 timeout 结束;启动链路到达 `Running target/debug/imgconvert`。
+
+---
+
+## 2026-07-01 — P2 第一批:格式级编码参数
+
+Codex 启动 P2 保真/压缩阶段,先完成可见且低风险的 per-format 参数闭环:
+
+- **core 参数扩展**:`EncodeOptions` 新增 `jpeg_progressive`、`png_oxipng_level`、`webp_method`、`avif_speed`,默认值锁为 JPEG progressive=true、oxipng=4、WebP method=4、AVIF speed=8。
+- **编码器落地**:JPEG 可切 baseline/progressive;PNG 从固定 oxipng preset 改为用户级别 0..6;WebP 改用 `webp::WebPConfig` + `encode_advanced()` 传入 method/lossless/quality;AVIF `libavif-sys` encoder speed 改为来自参数,继续保持 `maxThreads=1`。
+- **Tauri 协议**:`ConvertOptions` 增加对应 camelCase IPC 字段并保留 serde default,旧前端/旧配置缺字段时仍按 P2 默认值运行;`convert_image` / `convert_batch` 统一经 `encode_options_for()` 传入 core。
+- **前端设置**:`SettingsBar` 新增“格式参数”区,JPEG 显示 progressive switch,PNG/WebP/AVIF 显示 shadcn slider;设置持久化和归一化会 clamp 到合法范围。
+- **测试覆盖**:core 新增默认值、JPEG SOF marker 和参数 clamp 测试;Tauri 新增 `ConvertOptions -> EncodeOptions` 映射测试。
+
+验证:
+
+- `cargo test -p imgconvert-core`:通过(21 tests)。
+- `cargo clippy -p imgconvert-core -- -D warnings`:通过。
+- `cargo +1.96.0 test --manifest-path src-tauri/Cargo.toml`:通过(64 tests)。
+- `cargo +1.96.0 clippy --manifest-path src-tauri/Cargo.toml -- -D warnings`:通过。
+- `pnpm run check`:通过(0 errors / 0 warnings)。
+- `pnpm run format:check`:通过。
+- `pnpm run test`:通过。
+- `pnpm run build`:通过。
+- `pnpm run e2e`:通过(Chromium Web 预览 smoke 1 test)。
+- `pnpm run license:check`:通过,未发现 GPL/AGPL/LGPL。
+- `timeout 25s xvfb-run -a pnpm tauri dev`:按预期由 timeout 结束;启动链路到达 `Running target/debug/imgconvert`。
+
+---
+
+## 2026-07-01 — 质量体系 v1
+
+Codex 按当前 Tauri 2 + Svelte 5 + Rust core 架构补齐第一版可执行质量门:
+
+- **前端质量门**:新增 `typecheck`(`tsc --noEmit` + `svelte-check`)、`lint`(ESLint flat config + Svelte/TS rules)、`format:check`(Prettier + Svelte plugin)、`deadcode`(Knip 文件/依赖扫描)、`test`(Vitest) 与 `e2e`(Playwright Web 预览 smoke)。
+- **测试基线**:新增 `tests/state.test.ts`,覆盖格式能力映射、队列去重/跳过与大小格式化;新增 `e2e/app.spec.ts`,验证 Web 预览 shell 能加载。
+- **工程入口**:新增 `quality:frontend` / `quality:rust` / `quality:security` 聚合脚本与 `Makefile`;默认 security gate 保持本机可重复,只跑 license、deny bans、deny sources,在线 RustSec 检查保留在 `audit:rust` 与 CI。
+- **CI**:新增 `.github/workflows/ci.yml`,分层跑 frontend、Rust core、Tauri backend、security/license 与 Playwright Web preview E2E。
+- **格式基线**:补 `.prettierrc.json` / `.prettierignore`,并把 shadcn button 的 module exports 拆到 `button.ts`,让裸 `tsc --noEmit` 能稳定检查。
+
+验证:
+
+- `pnpm run quality:frontend`:通过。
+- `pnpm run quality:rust`:通过(core 18 tests;src-tauri 63 tests)。
+- `pnpm run quality:security`:通过;`cargo deny check bans sources` 仍会输出 Tauri 依赖树重复版本 warning,但不阻断。
+- `pnpm run e2e`:通过(Chromium Web 预览 smoke 1 test)。
+- `pnpm run audit:npm`:通过,无 prod npm 漏洞。
+- `timeout 25s xvfb-run -a pnpm tauri dev`:按预期由 timeout 结束;启动链路到达 `Running target/debug/imgconvert`。
+- `git diff --check`:通过。
+
+---
+
+## 2026-07-01 — P1.5 收尾:许可边界与手动 helper 白名单
+
+Codex 在 review 后继续推进 P1.5 收尾:
+
+- **review 修复**:剪贴板临时文件清理改为后端状态登记,`cleanup_imported_temp_file()` 只会删除本次运行中由 `import_clipboard_image()` 创建并登记的文件,不再仅凭 `/tmp/imgconvert-clipboard-*` 路径前缀判断;paste 导入同时读取 `DataTransfer.items`,覆盖部分 WebView/桌面环境截图不出现在 `DataTransfer.files` 的情况。
+- **渠道禁用开关**:新增 `IMGCONVERT_DISABLE_EXTERNAL_CODECS=1|true|yes|on`,支持运行时或构建时禁用外部 codec/helper 自动发现。禁用后 HEIC manifest 与系统 helper 都不会激活,诊断 UI 会显示禁用原因。
+- **诊断字段**:`codec_diagnostics().heic` 新增 `externalCodecsEnabled` 与 `disabledReason`,用于区分“未安装 helper”和“渠道/构建主动禁用”。
+- **用户显式 helper 白名单**:新增 `set_selected_heic_helper(path|null)` 命令,前端在插件诊断弹层中选择/清除本机 HEIC helper,设置路径随用户配置持久化;能力检测时先同步该白名单。
+- **provider 优先级**:HEIC provider 激活顺序调整为手动 helper → manifest provider → 系统 PATH helper。手动 helper 有效时保存 canonical 可执行文件路径;失效路径只进入诊断状态,显示为不可用但不会执行。
+- **许可/专利文案**:插件诊断 UI 增加“许可与渠道边界”,明确主程序不内置 HEIC codec、不链接 libheif、不分发 x265;HEIC 仅通过用户环境里的可选 decode-only provider 导入,插件许可/NOTICE/专利风险需单独处理。
+- **前端文案**:引擎状态与诊断标题统一使用“HEIC 可选导入”,避免写成开箱即用的 HEIC 支持。
+- **review 修复 2**:外部 helper/manifest 发现改为 canonical 路径后再校验目录信任、文件写权限和执行权限;manifest 读取限制为 64 KiB 并新增超限错误码;剪贴板导入区分 scan/clipboard 模式,取消按钮可中断剪贴板循环并清理未入队临时文件;临时文件清理改为用已登记 canonical 路径验证和删除,避免 alias 路径导致登记丢失。
+
+验证:
+
+- `pnpm run check`:通过(0 errors / 0 warnings)。
+- `cargo +1.96.0 test --manifest-path src-tauri/Cargo.toml`:通过(63 tests)。
+- `cargo +1.96.0 clippy --manifest-path src-tauri/Cargo.toml -- -D warnings`:通过。
+- `cargo test -p imgconvert-core`:通过(18 tests)。
+- `cargo clippy -p imgconvert-core -- -D warnings`:通过。
+- `pnpm run build`:通过。
+- `pnpm run license:check`:通过,未发现 GPL/AGPL/LGPL。
+- `cargo fmt --check`、`cargo +1.96.0 fmt --manifest-path src-tauri/Cargo.toml --check`、`git diff --check`:通过。
+- `timeout 25s xvfb-run -a pnpm tauri dev`:按预期由 timeout 结束;启动链路到达 `Running target/debug/imgconvert`。
+
+---
+
+## 2026-07-01 — P1 剪贴板导入最小闭环
+
+Codex 完成 P1 最后一个导入小项:
+
+- **粘贴入口**:Dropzone 新增「粘贴导入」按钮,主窗口监听 `Ctrl+V`/系统 paste;图片 Blob 直接导入,不影响文件名模板等输入框里的普通文本粘贴。
+- **路径兼容**:剪贴板文本支持 `file://`、`text/uri-list`、GNOME `x-special/gnome-copied-files` 与绝对路径,统一复用既有 `scan_import_paths` 扫描/过滤/去重。
+- **图片 Blob 落盘**:新增 `import_clipboard_image()` Tauri 命令,把 PNG/JPEG/WebP/AVIF 剪贴板图片写入私有临时目录,返回现有 `ImportScanFile` 元数据,后续缩略图、批量转换、取消协议不另开分支。
+- **清理边界**:剪贴板临时图片标记为 `temporary`,队列移除/清空时调用 `cleanup_imported_temp_file()`;后端只清理本应用创建的 `imgconvert-clipboard-*` 私有临时目录下文件。
+- **安全与限制**:单张剪贴板图片上限 128 MiB;Linux 文件管理器复制文件时依赖剪贴板是否暴露 `file://`/路径文本,不尝试从 WebView 猜测不可见本机路径。
+
+验证:
+
+- `pnpm run check`:通过(0 errors / 0 warnings)。
+- `cargo +1.96.0 test --manifest-path src-tauri/Cargo.toml`:通过(54 tests)。
+- `cargo +1.96.0 clippy --manifest-path src-tauri/Cargo.toml -- -D warnings`:通过。
+- `cargo test -p imgconvert-core`:通过(18 tests)。
+- `cargo clippy -p imgconvert-core -- -D warnings`:通过。
+- `pnpm run build`:通过。
+- `pnpm run license:check`:通过,未发现 GPL/AGPL/LGPL。
+- `cargo fmt --check`、`cargo +1.96.0 fmt --manifest-path src-tauri/Cargo.toml --check`、`git diff --check`:通过。
+- `timeout 25s xvfb-run -a pnpm tauri dev`:按预期由 timeout 结束;启动链路到达 `Running target/debug/imgconvert`。
+
+---
+
+## 2026-07-01 — P1.5 插件诊断 UI
+
+Codex 完成插件诊断 UI 的第一版:
+
+- **后端诊断命令**:新增 `codec_diagnostics()` Tauri 命令,返回 HEIC 是否启用、active provider、manifest 搜索目录、每个 manifest 的 accepted/rejected 状态与系统 helper 探测结果。
+- **诊断信息粒度**:manifest 目录会区分 missing / empty / ready / rejected / untrusted / unreadable;manifest 文件返回具体拒绝原因,包括许可、协议、可写 HEIC、路径逃逸、helper 不可执行等错误码前缀。
+- **前端入口**:顶栏新增「插件诊断」按钮;弹层展示 HEIC 状态、active provider 执行文件与 argv、探测摘要、系统 helper 列表和 manifest 搜索明细。
+- **运行边界**:网页预览返回空诊断;Tauri 桌面端执行本机只读探测,不启动 helper、不解码文件。
+- **review 修复**:helper stdout 直接丢弃,stderr 走管道并限制为 64 KiB;helper 生成的临时 PNG 读取限制为 512 MiB,避免异常 helper 填满磁盘或内存。非 Unix 平台在尚未实现平台信任模型前不启用外部 HEIC helper/manifest 自动发现;诊断弹层每次打开都会刷新,顶栏引擎文案在窄屏截断。
+
+验证:
+
+- `pnpm run check`:通过(0 errors / 0 warnings)。
+- `cargo +1.96.0 test --manifest-path src-tauri/Cargo.toml`:通过(51 tests)。
+- `cargo +1.96.0 clippy --manifest-path src-tauri/Cargo.toml -- -D warnings`:通过。
+- `cargo test -p imgconvert-core`:通过(18 tests)。
+- `cargo clippy -p imgconvert-core -- -D warnings`:通过。
+- `pnpm run build`:通过。
+- `pnpm run license:check`:通过,未发现 GPL/AGPL/LGPL。
+- `cargo fmt --check`、`cargo +1.96.0 fmt --manifest-path src-tauri/Cargo.toml --check`、`git diff --check`:通过。
+- `timeout 25s xvfb-run -a pnpm tauri dev`:按预期由 timeout 结束;启动链路到达 `Running target/debug/imgconvert`。
+
+---
+
+## 2026-07-01 — P1.5 HEIC manifest 插件协议最小闭环
+
+Codex 完成 HEIC 插件 manifest v1 的第一版可运行闭环:
+
+- **manifest 发现**:新增 `IMGCONVERT_CODEC_PLUGIN_DIRS`、XDG user data、XDG system data 三层搜索;优先读取 `imgconvert-codec-heic.json`,再读取同目录其它 `imgconvert-codec-*.json`。
+- **协议校验**:v1 manifest 要求 `protocol:1`、`mode:"external-process"`、`decode.kind:"heic-to-png-file"`、`output:"png"`;`readable` 只能声明 `heic/heif/hif` 且必须含 `heic`;`writable` 必须为空;拒绝 GPL/AGPL 许可。
+- **安全边界**:manifest helper 可用 manifest 目录内相对路径或受信任目录绝对路径;相对路径禁止 `..`,解析后不能逃出 manifest 目录;`args` 只做 argv 模板替换,`{input}` / `{output}` 必须是独立 argv entry,不执行 shell。
+- **能力矩阵**:`capabilities()` 新增 `codecProviders`,HEIC manifest provider 会以 `{ kind:"manifest", license, readable, writable }` 形式返回;系统 `heif-convert` fallback 以 `kind:"system-helper"` 返回;前端引擎文案区分「插件」与「系统 helper」。
+- **兼容路径**:manifest provider 优先于系统 PATH helper;未安装 manifest 时仍保持 `heif-convert` / `heif-dec` 系统 helper fallback。
+
+验证:
+
+- `cargo +1.96.0 test --manifest-path src-tauri/Cargo.toml`:通过(47 tests)。
+- `cargo +1.96.0 clippy --manifest-path src-tauri/Cargo.toml -- -D warnings`:通过。
+- `cargo test -p imgconvert-core`:通过(18 tests)。
+- `cargo clippy -p imgconvert-core -- -D warnings`:通过。
+- `pnpm run check`:通过(0 errors / 0 warnings)。
+- `pnpm run build`:通过。
+- `pnpm run license:check`:通过,未发现 GPL/AGPL/LGPL。
+- `cargo fmt --check`、`cargo +1.96.0 fmt --manifest-path src-tauri/Cargo.toml --check`、`git diff --check`:通过。
+- `timeout 25s xvfb-run -a pnpm tauri dev`:按预期由 timeout 结束;启动链路到达 `Running target/debug/imgconvert`。
+
+---
+
+## 2026-06-30 — P1.5 HEIC 系统 helper 导入最小闭环
+
+Codex 完成 HEIC decode-only 的第一批实现,主程序依赖树仍保持 Apache-2.0 / 禁 GPL-AGPL-LGPL:
+
+- **外部进程边界**:新增 `src-tauri/src/external_codecs.rs`,运行时探测系统 `heif-convert` / `heif-dec`,通过 argv + 临时 PNG 文件调用,不使用 shell 拼接,不链接 `libheif`。
+- **能力矩阵合并**:`capabilities()` 在检测到 helper 时把 `heic` 加入 `readable`,但不加入 `writable`;前端只把 HEIC 作为源格式/导入能力展示,目标格式下拉仍只来自 `capabilities.writable`。
+- **导入与转换路径**:`scan_import_paths` 仅在 helper 可用时接受 `heic/heif/hif`;`convert_image` / `convert_batch` 对 HEIC 输入先经 helper 解码为 PNG 字节,再进入现有 `imgconvert-core::convert()` 管线;异步缩略图同样复用该 decode 路径。
+- **安全与错误边界**:调用 helper 前验证 HEIF/HEIC `ftyp` 文件头;HEIC 临时目录在 Unix 下以 `0700` 创建并在 Drop 中清理;helper PATH 目录及其祖先不能 world-writable;helper 缺失、超时、输出缺失、stderr 诊断都会返回到前端错误信息。
+- **该批次限制**:当时尚未实现 manifest 插件协议、用户显式选择 helper、Windows WIC/helper 路线;真实 HEIC 样张 smoke 已在安装 `libheif-examples` 后补跑通过。
+
+验证:
+
+- `cargo +1.96.0 test --manifest-path src-tauri/Cargo.toml`:通过(43 tests)。
+- `cargo +1.96.0 clippy --manifest-path src-tauri/Cargo.toml -- -D warnings`:通过。
+- `cargo test -p imgconvert-core`:通过(18 tests)。
+- `cargo clippy -p imgconvert-core -- -D warnings`:通过。
+- `pnpm run check`:通过(0 errors / 0 warnings)。
+- `pnpm run build`:通过。
+- `pnpm run license:check`:通过,未发现 GPL/AGPL/LGPL。
+- `cargo fmt --check`、`cargo +1.96.0 fmt --manifest-path src-tauri/Cargo.toml --check`、`git diff --check`:通过。
+- `timeout 25s xvfb-run -a pnpm tauri dev`:按预期由 timeout 结束;启动链路到达 `Running target/debug/imgconvert`。
+- `libheif-examples` 1.19.8 真实 helper smoke:用 `heif-enc` 生成临时 `.heic`,再调用当前 `external_codecs::decode_heic_to_png()` 成功读回 PNG 字节。
+
+---
+
 ## 2026-06-30 — HEIC 插件策略文档化
 
 Codex 记录 HEIC 可选插件路线,并按许可/平台依赖做了一轮方案 review:
