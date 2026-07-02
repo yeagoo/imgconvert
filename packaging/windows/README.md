@@ -13,13 +13,26 @@ Local preflight from any host:
 ```bash
 pnpm run release:windows:direct:check
 pnpm run release:windows:check
+pnpm run release:windows:smoke -- --allow-non-windows --skip-convert-smoke
 ```
 
-Direct distribution build on Windows, after code signing is configured:
+Runtime smoke on Windows:
 
-```bash
-pnpm tauri build --ci --bundles msi,nsis
+```powershell
+pnpm run release:windows:smoke
 ```
+
+Direct distribution build on Windows:
+
+```powershell
+pnpm run release:windows
+```
+
+GitHub Actions also exposes `Windows Smoke`. Pushes to `main` run Windows
+guardrails, Rust backend checks, and a hidden real conversion smoke. Manual runs
+can enable `build_direct` to build unsigned `.msi` and NSIS `.exe` artifacts.
+Code signing is not configured in this repository; sign installers only in the
+release runner or signing environment.
 
 Microsoft Store is a separate candidate path. Tauri does not make MSIX a first-class bundle target for this repo, so the store route still needs a Windows runner, MSIX packaging, `runFullTrust`, Partner Center setup, and real install smoke testing.
 

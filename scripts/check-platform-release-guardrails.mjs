@@ -165,6 +165,7 @@ function checkMacosRuntimeGuardrails() {
 
 function checkWindows() {
   requireBundleIcon(".ico", "Windows");
+  checkWindowsRuntimeGuardrails();
   const directSelected = options.channels.includes("direct");
   const storeSelected = options.channels.includes("store");
   if (directSelected) {
@@ -175,6 +176,25 @@ function checkWindows() {
   }
   if (storeSelected) {
     checkWindowsStoreDocs();
+  }
+}
+
+function checkWindowsRuntimeGuardrails() {
+  const packageScripts = packageJson.scripts ?? {};
+  if (!packageScripts["release:windows:smoke"]?.includes("smoke-windows-runtime.mjs")) {
+    failures.push("package.json must expose release:windows:smoke for Windows runtime acceptance");
+  }
+  if (!packageScripts["release:windows"]?.includes("check-windows-bundle-artifacts.mjs")) {
+    failures.push("package.json must expose release:windows with installer artifact verification");
+  }
+  for (const script of [
+    "scripts/smoke-windows-runtime.mjs",
+    "scripts/clean-windows-bundles.mjs",
+    "scripts/check-windows-bundle-artifacts.mjs",
+  ]) {
+    if (!existsSync(path.join(repoRoot, script))) {
+      failures.push(`${script} is required for Windows direct runtime/build smoke`);
+    }
   }
 }
 

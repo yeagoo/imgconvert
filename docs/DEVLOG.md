@@ -5,6 +5,20 @@
 
 ---
 
+## 2026-07-03 — Windows 阶段第一批:runner smoke 与直发安装包闭环
+
+Codex 在 macOS HEIC GitHub-hosted smoke 通过后,启动 Windows 阶段第一批,先落地不需要签名证书/Partner Center 的真实 runner 闭环:
+
+- **Windows runtime smoke 聚合**:新增 `scripts/smoke-windows-runtime.mjs` 与 `pnpm run release:windows:smoke`。Windows runner 会跑 direct/store guardrail,再通过隐藏 `IMGCONVERT_PACKAGE_CONVERT_SMOKE=1` 二进制入口做 JPEG/WebP/PNG/AVIF 真实转换 smoke,不启动 GUI。
+- **Windows 直发安装包入口**:新增 `pnpm run release:windows`,先清理旧 `.msi`/NSIS bundle,再执行 `pnpm tauri build --ci --bundles msi,nsis`,最后用 `scripts/check-windows-bundle-artifacts.mjs` 校验 artifact 非空、版本号和命名。`pnpm run release:windows:verify` 可单独复核已生成产物。
+- **Windows Smoke workflow**:新增 `.github/workflows/windows-smoke.yml`。push 到 `main` 默认跑 Windows typecheck、release guardrail、Tauri backend fmt/clippy/test 和 runtime conversion smoke;手动触发可打开 `build_direct` 构建 unsigned `.msi`/NSIS `.exe` 并上传 artifact。
+- **guardrail 加固**:`release:windows:check` 现在要求 Windows runtime/build smoke 脚本存在,并要求 `package.json` 暴露 `release:windows:smoke` 与带 artifact verifier 的 `release:windows`。
+
+限制:
+
+- 本批次仍不包含代码签名、timestamp、SmartScreen 声誉、MSIX、`runFullTrust`、Partner Center 或真实安装后启动 smoke。直发 artifact 是 unsigned candidate,用于验证 Windows 编译/打包链路。
+- Windows WIC HEIC 系统路线仍未实现;当前 Windows HEIC 仍依赖已落地的 decode-only 外部 helper/plugin 协议。
+
 ## 2026-07-03 — macOS 阶段第一批:ImageIO HEIC 导入、security scope 钩子与 AVIF benchmark
 
 Codex 启动 macOS 阶段开发,先落地可在当前仓库合入且不会污染主依赖树的第一批:
