@@ -120,6 +120,76 @@ function checkMacosRuntimeGuardrails() {
       "package.json must expose release:macos:smoke for real-machine runtime acceptance",
     );
   }
+  if (!packageScripts["release:macos"]?.includes("check-macos-bundle-artifacts.mjs")) {
+    failures.push("package.json must expose release:macos with DMG artifact verification");
+  }
+  if (!packageScripts["release:macos:notarize"]?.includes("notarize-macos-dmg.mjs")) {
+    failures.push("package.json must expose release:macos:notarize");
+  }
+  if (!packageScripts["release:macos:mas:prepare"]?.includes("prepare-macos-mas-release.mjs")) {
+    failures.push("package.json must expose release:macos:mas:prepare");
+  }
+  if (
+    !packageScripts["release:macos:mas"]?.includes("release:macos:mas:prepare") ||
+    !packageScripts["release:macos:mas"]?.includes("check-macos-bundle-artifacts.mjs") ||
+    !packageScripts["release:macos:mas"]?.includes("IMGCONVERT_DISABLE_EXTERNAL_CODECS=1")
+  ) {
+    failures.push(
+      "package.json must expose release:macos:mas with store codec guardrail and app artifact verification",
+    );
+  }
+  if (!packageScripts["release:macos:mas:pkg"]?.includes("package-macos-mas-pkg.mjs")) {
+    failures.push("package.json must expose release:macos:mas:pkg");
+  }
+  for (const script of [
+    "scripts/smoke-macos-runtime.mjs",
+    "scripts/clean-macos-bundles.mjs",
+    "scripts/check-macos-bundle-artifacts.mjs",
+    "scripts/notarize-macos-dmg.mjs",
+    "scripts/prepare-macos-mas-release.mjs",
+    "scripts/package-macos-mas-pkg.mjs",
+  ]) {
+    if (!existsSync(path.join(repoRoot, script))) {
+      failures.push(`${script} is required for macOS runtime/build smoke`);
+    }
+  }
+
+  const cargoToml = readText(path.join(repoRoot, "src-tauri", "Cargo.toml"));
+  const libRs = readText(path.join(repoRoot, "src-tauri", "src", "lib.rs"));
+  const stateTs = readText(path.join(repoRoot, "src", "lib", "state.svelte.ts"));
+  const capabilities = readText(path.join(repoRoot, "src-tauri", "capabilities", "default.json"));
+  if (!cargoToml.includes("tauri-plugin-fs")) {
+    failures.push("macOS scoped dialog persistence needs tauri-plugin-fs in Cargo.toml");
+  }
+  if (!cargoToml.includes("tauri-plugin-persisted-scope")) {
+    failures.push("macOS MAS path persistence needs tauri-plugin-persisted-scope in Cargo.toml");
+  }
+  if (!libRs.includes("tauri_plugin_fs::init()")) {
+    failures.push("Tauri builder must register fs plugin before scoped dialog persistence");
+  }
+  if (!libRs.includes("tauri_plugin_persisted_scope::init()")) {
+    failures.push("Tauri builder must register persisted scope before macOS MAS release");
+  }
+  if (!stateTs.includes('fileAccessMode: platform === "macos" ? "scoped" : undefined')) {
+    failures.push("macOS file dialog must request scoped file access");
+  }
+  if (!capabilities.includes('"fs:scope"')) {
+    failures.push("Tauri capability must include fs:scope so dialog grants can be persisted");
+  }
+
+  const masPrepare = readText(path.join(repoRoot, "scripts", "prepare-macos-mas-release.mjs"));
+  for (const expected of [
+    "APPLE_TEAM_ID",
+    "IMGCONVERT_MAS_PROVISION_PROFILE",
+    "IMGCONVERT_MAS_PROVISION_PROFILE_BASE64",
+    "com.apple.application-identifier",
+    "com.apple.developer.team-identifier",
+    "embedded.provisionprofile",
+  ]) {
+    if (!masPrepare.includes(expected)) {
+      failures.push(`prepare-macos-mas-release.mjs must handle ${expected}`);
+    }
+  }
 
   const systemCodecs = readText(path.join(repoRoot, "src-tauri", "src", "macos_system_codecs.rs"));
   if (!systemCodecs.includes("ImageIO.framework")) {
@@ -156,6 +226,7 @@ function checkMacosRuntimeGuardrails() {
     "notarytool",
     "bench:avif:macos",
     "release:macos:smoke",
+    "release:macos",
   ]) {
     if (!readme.includes(expected)) {
       failures.push(`packaging/macos/README.md must document ${expected}`);
@@ -254,6 +325,15 @@ function checkMacosStoreConfig() {
   }
   if (macos.entitlements !== "entitlements.macos.mas.plist") {
     failures.push("macOS MAS config must use entitlements.macos.mas.plist");
+  }
+  if (macos.infoPlist !== "Info.macos.mas.plist") {
+    failures.push("macOS MAS config must merge Info.macos.mas.plist");
+  }
+  const infoPlist = readText(path.join(srcTauriRoot, "Info.macos.mas.plist"));
+  if (!infoPlist.includes("ITSAppUsesNonExemptEncryption") || !infoPlist.includes("<false/>")) {
+    failures.push(
+      "Info.macos.mas.plist must declare no non-exempt encryption for App Store review",
+    );
   }
   const entitlements = readEntitlements(macos.entitlements);
   if (!entitlements) {

@@ -9,10 +9,20 @@ on:
       heic_smoke:
         description: Generate a small HEIC fixture with macOS sips and run ImageIO import smoke.
         required: true
-        default: false
+        default: true
         type: boolean
       build_direct:
         description: Build an unsigned direct DMG candidate.
+        required: true
+        default: false
+        type: boolean
+      notarize_direct:
+        description: Build a signed/notarized direct DMG candidate using Apple secrets.
+        required: true
+        default: false
+        type: boolean
+      build_mas_candidate:
+        description: Build a signed MAS .app candidate using Apple Team/provisioning secrets.
         required: true
         default: false
         type: boolean
@@ -33,7 +43,7 @@ jobs:
   macos-smoke:
     name: macOS Smoke (arm64)
     runs-on: macos-15
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -72,8 +82,8 @@ jobs:
       - name: Tauri backend macOS tests
         run: cargo +1.96.0 test --manifest-path src-tauri/Cargo.toml
 
-      - name: Generate optional HEIC fixture
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.heic_smoke }}
+      - name: Generate HEIC fixture
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.heic_smoke }}
         run: |
           mkdir -p "$RUNNER_TEMP/imgconvert-macos-heic"
           IMGCONVERT_PACKAGE_CONVERT_SMOKE=1 \
@@ -85,23 +95,172 @@ jobs:
             --out "$RUNNER_TEMP/imgconvert-macos-heic/smoke.heic"
 
       - name: macOS runtime smoke
-        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.heic_smoke }}
+        if: ${{ github.event_name == 'workflow_dispatch' && !inputs.heic_smoke }}
         run: pnpm run release:macos:smoke
 
       - name: macOS runtime smoke with HEIC fixture
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.heic_smoke }}
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.heic_smoke }}
         env:
           IMGCONVERT_MACOS_HEIC_SMOKE_INPUT: ${{ runner.temp }}/imgconvert-macos-heic/smoke.heic
         run: pnpm run release:macos:smoke
 
-      - name: Optional direct DMG build
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_direct }}
-        run: pnpm tauri build --ci --bundles dmg
+      - name: Check direct signing/notarization secrets
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.notarize_direct }}
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          test -n "$APPLE_CERTIFICATE" || { echo "APPLE_CERTIFICATE secret is required"; exit 1; }
+          test -n "$APPLE_CERTIFICATE_PASSWORD" || { echo "APPLE_CERTIFICATE_PASSWORD secret is required"; exit 1; }
+          test -n "$KEYCHAIN_PASSWORD" || { echo "KEYCHAIN_PASSWORD secret is required"; exit 1; }
+          if [ -n "$APPLE_API_KEY" ] || [ -n "$APPLE_API_ISSUER" ] || [ -n "$APPLE_API_KEY_BASE64" ]; then
+            test -n "$APPLE_API_KEY" || { echo "APPLE_API_KEY secret is required with API notarization"; exit 1; }
+            test -n "$APPLE_API_ISSUER" || { echo "APPLE_API_ISSUER secret is required with API notarization"; exit 1; }
+            test -n "$APPLE_API_KEY_BASE64" || { echo "APPLE_API_KEY_BASE64 secret is required with API notarization"; exit 1; }
+          else
+            test -n "$APPLE_ID" || { echo "APPLE_ID secret is required without API notarization"; exit 1; }
+            test -n "$APPLE_PASSWORD" || { echo "APPLE_PASSWORD secret is required without API notarization"; exit 1; }
+            test -n "$APPLE_TEAM_ID" || { echo "APPLE_TEAM_ID secret is required without API notarization"; exit 1; }
+          fi
+
+      - name: Check MAS candidate secrets
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_mas_candidate }}
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          IMGCONVERT_MAS_PROVISION_PROFILE_BASE64: ${{ secrets.IMGCONVERT_MAS_PROVISION_PROFILE_BASE64 }}
+        run: |
+          test -n "$APPLE_CERTIFICATE" || { echo "APPLE_CERTIFICATE secret is required"; exit 1; }
+          test -n "$APPLE_CERTIFICATE_PASSWORD" || { echo "APPLE_CERTIFICATE_PASSWORD secret is required"; exit 1; }
+          test -n "$KEYCHAIN_PASSWORD" || { echo "KEYCHAIN_PASSWORD secret is required"; exit 1; }
+          test -n "$APPLE_TEAM_ID" || { echo "APPLE_TEAM_ID secret is required"; exit 1; }
+          test -n "$IMGCONVERT_MAS_PROVISION_PROFILE_BASE64" || { echo "IMGCONVERT_MAS_PROVISION_PROFILE_BASE64 secret is required"; exit 1; }
+
+      - name: Import Apple signing certificate
+        if: ${{ github.event_name == 'workflow_dispatch' && (inputs.notarize_direct || inputs.build_mas_candidate) }}
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/imgconvert-signing.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" imgconvert-build.keychain
+          security default-keychain -s imgconvert-build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" imgconvert-build.keychain
+          security set-keychain-settings -t 3600 -u imgconvert-build.keychain
+          security import "$RUNNER_TEMP/imgconvert-signing.p12" \
+            -k imgconvert-build.keychain \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/productbuild
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" imgconvert-build.keychain
+          security find-identity -v -p codesigning imgconvert-build.keychain
+
+      - name: Prepare App Store Connect API key
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.notarize_direct }}
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+        run: |
+          if [ -n "$APPLE_API_KEY" ] && [ -n "$APPLE_API_KEY_BASE64" ]; then
+            key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY}.p8"
+            echo "$APPLE_API_KEY_BASE64" | base64 --decode > "$key_path"
+            echo "APPLE_API_KEY_PATH=$key_path" >> "$GITHUB_ENV"
+          fi
+
+      - name: Select direct signing identity
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.notarize_direct }}
+        env:
+          IMGCONVERT_DIRECT_SIGNING_IDENTITY: ${{ secrets.IMGCONVERT_DIRECT_SIGNING_IDENTITY }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          identity="${IMGCONVERT_DIRECT_SIGNING_IDENTITY:-$APPLE_SIGNING_IDENTITY}"
+          if [ -z "$identity" ]; then
+            identity="$(security find-identity -v -p codesigning imgconvert-build.keychain | awk -F'"' '/Developer ID Application/ { print $2; exit }')"
+          fi
+          test -n "$identity" || { echo "Developer ID Application signing identity was not found"; exit 1; }
+          echo "IMGCONVERT_DIRECT_EFFECTIVE_SIGNING_IDENTITY=$identity" >> "$GITHUB_ENV"
+
+      - name: Optional unsigned direct DMG build
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_direct && !inputs.notarize_direct }}
+        run: pnpm run release:macos
+
+      - name: Optional signed and notarized direct DMG build
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.notarize_direct }}
+        env:
+          APPLE_PROVIDER_SHORT_NAME: ${{ secrets.APPLE_PROVIDER_SHORT_NAME }}
+        run: APPLE_SIGNING_IDENTITY="$IMGCONVERT_DIRECT_EFFECTIVE_SIGNING_IDENTITY" pnpm run release:macos
+
+      - name: Notarize and verify direct DMG
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.notarize_direct }}
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: pnpm run release:macos:notarize
 
       - uses: actions/upload-artifact@v4
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_direct }}
+        if: ${{ github.event_name == 'workflow_dispatch' && (inputs.build_direct || inputs.notarize_direct) }}
         with:
           name: imgconvert-macos-arm64-dmg
           if-no-files-found: error
           retention-days: 14
           path: src-tauri/target/release/bundle/dmg/*.dmg
+
+      - name: Select MAS signing identity
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_mas_candidate }}
+        env:
+          IMGCONVERT_MAS_SIGNING_IDENTITY: ${{ secrets.IMGCONVERT_MAS_SIGNING_IDENTITY }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          identity="${IMGCONVERT_MAS_SIGNING_IDENTITY:-$APPLE_SIGNING_IDENTITY}"
+          if [ -z "$identity" ]; then
+            identity="$(security find-identity -v -p codesigning imgconvert-build.keychain | awk -F'"' '/Apple Distribution/ { print $2; exit }')"
+          fi
+          test -n "$identity" || { echo "Apple Distribution signing identity was not found"; exit 1; }
+          echo "IMGCONVERT_MAS_EFFECTIVE_SIGNING_IDENTITY=$identity" >> "$GITHUB_ENV"
+
+      - name: Optional MAS .app candidate build
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_mas_candidate }}
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          IMGCONVERT_MAS_PROVISION_PROFILE_BASE64: ${{ secrets.IMGCONVERT_MAS_PROVISION_PROFILE_BASE64 }}
+        run: APPLE_SIGNING_IDENTITY="$IMGCONVERT_MAS_EFFECTIVE_SIGNING_IDENTITY" pnpm run release:macos:mas
+
+      - name: Optional MAS .pkg packaging
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_mas_candidate }}
+        env:
+          IMGCONVERT_MAS_INSTALLER_IDENTITY: ${{ secrets.IMGCONVERT_MAS_INSTALLER_IDENTITY }}
+        run: |
+          if [ -z "$IMGCONVERT_MAS_INSTALLER_IDENTITY" ]; then
+            echo "Skipping MAS .pkg packaging: IMGCONVERT_MAS_INSTALLER_IDENTITY secret is not set."
+            exit 0
+          fi
+          pnpm run release:macos:mas:pkg
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_mas_candidate }}
+        with:
+          name: imgconvert-macos-arm64-mas-app
+          if-no-files-found: error
+          retention-days: 14
+          path: src-tauri/target/release/bundle/macos/*.app/**
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_mas_candidate }}
+        with:
+          name: imgconvert-macos-arm64-mas-pkg
+          if-no-files-found: ignore
+          retention-days: 14
+          path: src-tauri/target/release/bundle/pkg/*.pkg

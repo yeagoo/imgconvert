@@ -59,19 +59,16 @@ pub fn user_selected_paths(paths: Vec<String>) -> Vec<AuthorizedPath> {
     paths
         .into_iter()
         .filter_map(|path| {
-            let trimmed = path.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(AuthorizedPath::new(trimmed))
-            }
+            selected_path_to_path_buf(&path)
+                .or_else(|_| selected_path_to_path_buf(path.trim()))
+                .ok()
+                .map(AuthorizedPath::new)
         })
         .collect()
 }
 
 pub fn output_directory(path: Option<&str>) -> Option<AuthorizedPath> {
-    path.map(str::trim)
-        .filter(|path| !path.is_empty())
+    path.and_then(|path| selected_path_to_path_buf(path).ok())
         .map(AuthorizedPath::new)
 }
 
@@ -81,6 +78,22 @@ pub fn clipboard_temp_path(path: impl Into<PathBuf>) -> AuthorizedPath {
 
 pub fn scoped_path_access(path: &Path) -> ScopedPathAccess {
     ScopedPathAccess::start(path)
+}
+
+fn selected_path_to_path_buf(path: &str) -> Result<PathBuf, ()> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err(());
+    }
+    if let Ok(url) = tauri::Url::parse(trimmed) {
+        if url.scheme() == "file" {
+            return url.to_file_path().map_err(|_| ());
+        }
+        if url.scheme().len() != 1 {
+            return Err(());
+        }
+    }
+    Ok(PathBuf::from(trimmed))
 }
 
 #[cfg(test)]
@@ -109,6 +122,19 @@ mod tests {
             output_directory(Some("/tmp/out")).unwrap().path(),
             Path::new("/tmp/out")
         );
+    }
+
+    #[test]
+    fn selected_paths_accept_file_urls_for_macos_scoped_dialogs() {
+        let paths = user_selected_paths(vec!["file:///tmp/photo.png".to_string()]);
+
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0].path(), Path::new("/tmp/photo.png"));
+    }
+
+    #[test]
+    fn selected_paths_reject_non_file_urls() {
+        assert!(user_selected_paths(vec!["https://example.com/photo.png".to_string()]).is_empty());
     }
 
     #[cfg(not(target_os = "macos"))]

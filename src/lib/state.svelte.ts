@@ -455,10 +455,12 @@ async function hostPlatform(): Promise<string> {
 
 async function pickWithTauriDialog(options: PickPathOptions): Promise<string[]> {
   const extensions = sanitizedDialogExtensions(options.extensions ?? []);
+  const platform = await hostPlatform();
   const selected = await openDialog({
     directory: options.directory ?? false,
     multiple: options.multiple ?? false,
     title: options.title || undefined,
+    fileAccessMode: platform === "macos" ? "scoped" : undefined,
     filters:
       !options.directory && extensions.length
         ? [

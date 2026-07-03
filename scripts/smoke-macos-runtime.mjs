@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { spawnSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -56,17 +56,12 @@ run("pnpm", ["run", "release:macos:store:check"], "macOS store guardrails", {
 
 if (options.buildDirect) {
   requireMacos("--build-direct");
-  run("pnpm", ["tauri", "build", "--ci", "--bundles", "dmg"], "macOS direct DMG build");
+  run("pnpm", ["run", "release:macos"], "macOS direct DMG build");
 }
 
 if (options.buildMas) {
   requireMacos("--build-mas");
-  run(
-    "pnpm",
-    ["tauri", "build", "--ci", "--config", "src-tauri/tauri.macos.mas.conf.json"],
-    "macOS MAS candidate build",
-    { IMGCONVERT_DISABLE_EXTERNAL_CODECS: "1" },
-  );
+  run("pnpm", ["run", "release:macos:mas"], "macOS MAS candidate build");
 }
 
 if (!options.skipBenchmark) {
@@ -115,6 +110,9 @@ function runNotarization(dmgPath) {
   if (!options.notaryProfile) {
     fail("notarization requires --notary-profile or IMGCONVERT_NOTARYTOOL_PROFILE");
   }
+  if (!existsSync(dmgPath)) {
+    fail(`DMG does not exist: ${dmgPath}`);
+  }
   run(
     "xcrun",
     ["notarytool", "submit", dmgPath, "--keychain-profile", options.notaryProfile, "--wait"],
@@ -126,15 +124,33 @@ function runNotarization(dmgPath) {
     ["--assess", "--type", "open", "--context", "context:primary-signature", "-v", dmgPath],
     "Gatekeeper assessment",
   );
+  run(
+    "node",
+    [
+      "scripts/check-macos-bundle-artifacts.mjs",
+      "--profile=release",
+      "--bundles=dmg",
+      "--require-signed",
+      "--require-notarized",
+    ],
+    "signed/notarized DMG artifact verification",
+  );
 }
 
 function run(command, args, label, extraEnv = {}) {
   console.log(`\n> ${label}`);
-  const result = spawnSync(command, args, {
+  let result = spawnSync(command, args, {
     cwd: repoRoot,
     env: { ...process.env, ...extraEnv },
     stdio: "inherit",
   });
+  if (result.error?.code === "ENOENT" && command === "pnpm") {
+    result = spawnSync("corepack", ["pnpm", ...args], {
+      cwd: repoRoot,
+      env: { ...process.env, ...extraEnv },
+      stdio: "inherit",
+    });
+  }
   if (result.error) {
     fail(`${label} failed to start: ${result.error.message}`);
   }

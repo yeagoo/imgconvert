@@ -1,0 +1,138 @@
+// SPDX-License-Identifier: Apache-2.0
+
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const srcTauriRoot = path.join(repoRoot, "src-tauri");
+const generatedRoot = path.join(srcTauriRoot, "target", "macos-mas");
+
+const options = {
+  allowMissingProfile: false,
+};
+
+for (const arg of process.argv.slice(2)) {
+  if (arg === "--") {
+    continue;
+  } else if (arg === "--allow-missing-profile") {
+    options.allowMissingProfile = true;
+  } else {
+    fail(`unknown argument: ${arg}`);
+  }
+}
+
+const tauriConfig = readJson(path.join(srcTauriRoot, "tauri.conf.json"));
+const identifier = tauriConfig.identifier;
+const teamId = process.env.APPLE_TEAM_ID?.trim();
+const profile = provisionProfilePath();
+
+if (!/^[A-Z0-9]{10}$/.test(teamId ?? "")) {
+  fail(
+    "APPLE_TEAM_ID is required for MAS entitlements and must look like a 10-character Apple team ID",
+  );
+}
+if (!/^([a-zA-Z0-9-]+\.)+[a-zA-Z0-9-]+$/.test(identifier ?? "")) {
+  fail(`tauri.conf.json identifier is not a reverse-DNS bundle id: ${identifier ?? "<missing>"}`);
+}
+if (!profile && !options.allowMissingProfile) {
+  fail(
+    "IMGCONVERT_MAS_PROVISION_PROFILE or IMGCONVERT_MAS_PROVISION_PROFILE_BASE64 is required for MAS release builds",
+  );
+}
+
+mkdirSync(generatedRoot, { recursive: true });
+
+const generatedProfile = profile?.generatedPath ?? profile?.path;
+const entitlementsPath = path.join(generatedRoot, "entitlements.macos.mas.generated.plist");
+const configPath = path.join(generatedRoot, "tauri.macos.mas.generated.conf.json");
+
+writeFileSync(entitlementsPath, masEntitlements(teamId, identifier));
+writeFileSync(
+  configPath,
+  JSON.stringify(
+    {
+      $schema: "https://schema.tauri.app/config/2",
+      bundle: {
+        macOS: {
+          minimumSystemVersion: "10.13",
+          hardenedRuntime: true,
+          entitlements: "target/macos-mas/entitlements.macos.mas.generated.plist",
+          infoPlist: "Info.macos.mas.plist",
+          files: generatedProfile
+            ? {
+                [generatedProfile]: "embedded.provisionprofile",
+              }
+            : {},
+        },
+      },
+    },
+    null,
+    2,
+  ),
+);
+
+console.log(path.relative(repoRoot, configPath));
+
+function provisionProfilePath() {
+  const base64 = process.env.IMGCONVERT_MAS_PROVISION_PROFILE_BASE64?.trim();
+  if (base64) {
+    const generatedPath = path.join(generatedRoot, "embedded.provisionprofile");
+    mkdirSync(generatedRoot, { recursive: true });
+    writeFileSync(generatedPath, Buffer.from(base64, "base64"));
+    return { generatedPath };
+  }
+
+  const configured = process.env.IMGCONVERT_MAS_PROVISION_PROFILE?.trim();
+  if (!configured) {
+    return null;
+  }
+  const profilePath = path.resolve(configured);
+  if (!existsSync(profilePath)) {
+    fail(`MAS provisioning profile does not exist: ${configured}`);
+  }
+  return { path: profilePath };
+}
+
+function masEntitlements(teamId, identifier) {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.app-sandbox</key>
+  <true/>
+  <key>com.apple.security.files.user-selected.read-write</key>
+  <true/>
+  <key>com.apple.security.files.bookmarks.app-scope</key>
+  <true/>
+  <key>com.apple.application-identifier</key>
+  <string>${escapeXml(`${teamId}.${identifier}`)}</string>
+  <key>com.apple.developer.team-identifier</key>
+  <string>${escapeXml(teamId)}</string>
+</dict>
+</plist>
+`;
+}
+
+function escapeXml(value) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
+}
+
+function readJson(file) {
+  try {
+    return JSON.parse(readFileSync(file, "utf8"));
+  } catch (error) {
+    fail(`failed to read ${path.relative(repoRoot, file)}: ${error.message}`);
+  }
+}
+
+function fail(message) {
+  console.error(message);
+  process.exit(1);
+}

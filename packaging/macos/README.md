@@ -5,10 +5,10 @@
 This directory documents the first macOS release surface.
 
 - Direct distribution uses Tauri's automatic `src-tauri/tauri.macos.conf.json` merge and `entitlements.macos.direct.plist`.
-- Mac App Store builds must merge `src-tauri/tauri.macos.mas.conf.json` and set `IMGCONVERT_DISABLE_EXTERNAL_CODECS=1` before compiling, so optional external codec/helper discovery is compiled off.
+- Mac App Store builds must use the generated config from `pnpm run release:macos:mas:prepare` and set `IMGCONVERT_DISABLE_EXTERNAL_CODECS=1` before compiling, so optional external codec/helper discovery is compiled off.
 - The MAS entitlement set is intentionally narrow: App Sandbox, user-selected read/write files, and app-scoped bookmarks. Do not add broad network or filesystem entitlements without a concrete feature need.
 - HEIC import uses the macOS system ImageIO framework as a read-only `system-imageio` provider. It does not link libheif, does not bundle x265, and does not enable HEIC output until encoding, patents, and sandbox behavior are separately audited.
-- Runtime file access is routed through the security-scoped resource shim in `src-tauri/src/macos_security.rs`. Persistent MAS access still needs real bookmark data from the dialog layer and must balance start/stop access for every scoped URL.
+- Runtime file access is routed through Tauri dialog `fileAccessMode: "scoped"`, `tauri-plugin-fs`, `tauri-plugin-persisted-scope`, and the security-scoped resource shim in `src-tauri/src/macos_security.rs`. Dialog grants are added to the Tauri filesystem scope and persisted across launches; every backend path access still balances start/stop access with RAII.
 
 Local preflight from any host:
 
@@ -21,22 +21,30 @@ pnpm run release:macos:smoke -- --allow-non-macos --skip-benchmark --skip-heic
 Direct distribution build on macOS:
 
 ```bash
-pnpm tauri build --ci --bundles dmg
+pnpm run release:macos
+pnpm run release:macos:verify
 ```
 
 Direct distribution signing/notarization checklist:
 
 ```bash
-pnpm tauri build --ci --bundles dmg
-xcrun notarytool submit <ImgConvert.dmg> --keychain-profile <profile> --wait
-xcrun stapler staple <ImgConvert.dmg>
-spctl --assess --type open --context context:primary-signature -v <ImgConvert.dmg>
+export APPLE_SIGNING_IDENTITY="Developer ID Application: <name> (<TEAMID>)"
+export APPLE_ID="<apple-id>"
+export APPLE_PASSWORD="<app-specific-password>"
+export APPLE_TEAM_ID="<TEAMID>"
+pnpm run release:macos
+pnpm run release:macos:notarize
 ```
 
 MAS candidate build on macOS, after Apple signing/provisioning is configured:
 
 ```bash
-IMGCONVERT_DISABLE_EXTERNAL_CODECS=1 pnpm tauri build --ci --config src-tauri/tauri.macos.mas.conf.json
+export APPLE_TEAM_ID="<TEAMID>"
+export APPLE_SIGNING_IDENTITY="Apple Distribution: <name> (<TEAMID>)"
+export IMGCONVERT_MAS_PROVISION_PROFILE=/path/to/embedded.provisionprofile
+pnpm run release:macos:mas
+export IMGCONVERT_MAS_INSTALLER_IDENTITY="3rd Party Mac Developer Installer: <name> (<TEAMID>)"
+pnpm run release:macos:mas:pkg
 ```
 
 Apple Silicon AVIF benchmark, used to decide whether rav1e speed 8 remains a sane default on macOS:
@@ -53,11 +61,26 @@ pnpm run release:macos:smoke
 IMGCONVERT_MACOS_HEIC_SMOKE_INPUT=/path/to/sample.heic pnpm run release:macos:smoke
 pnpm run release:macos:smoke -- --build-direct
 pnpm run release:macos:smoke -- --notarize-dmg=/path/to/ImgConvert.dmg --notary-profile=<profile>
+pnpm run release:macos:notarize -- --dmg=/path/to/ImgConvert.dmg --keychain-profile=<profile>
 ```
+
+GitHub Actions:
+
+- Pushes to `main` run `macOS Smoke` on `macos-15` arm64, including generated HEIC fixture import through ImageIO.
+- Manual `build_direct=true` builds and uploads an unsigned `.dmg`.
+- Manual `notarize_direct=true` imports Apple signing secrets, builds a signed `.dmg`, runs `notarytool`, staples it, then runs `codesign` and Gatekeeper checks.
+- Manual `build_mas_candidate=true` imports Apple signing secrets, generates MAS entitlements/provisioning config, builds a signed `.app`, and optionally produces a `.pkg` when `IMGCONVERT_MAS_INSTALLER_IDENTITY` is set.
+
+Required GitHub secrets:
+
+- Direct signed/notarized DMG: `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `KEYCHAIN_PASSWORD`, plus either `APPLE_ID`/`APPLE_PASSWORD`/`APPLE_TEAM_ID` or `APPLE_API_KEY`/`APPLE_API_ISSUER`/`APPLE_API_KEY_BASE64`.
+- Optional direct overrides: `IMGCONVERT_DIRECT_SIGNING_IDENTITY` or `APPLE_SIGNING_IDENTITY`, and `APPLE_PROVIDER_SHORT_NAME`.
+- MAS candidate: `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `KEYCHAIN_PASSWORD`, `APPLE_TEAM_ID`, `IMGCONVERT_MAS_PROVISION_PROFILE_BASE64`, and optionally `IMGCONVERT_MAS_SIGNING_IDENTITY` / `IMGCONVERT_MAS_INSTALLER_IDENTITY`.
 
 macOS release acceptance still requires a real machine pass:
 
 - HEIC `.heic/.heif` import through ImageIO in direct build.
-- MAS sandbox file-open/output-directory flow using security-scoped bookmarks. The hidden path smoke covers the conversion backend; the interactive bookmark acquisition flow still needs a real GUI pass.
+- MAS sandbox file-open/output-directory flow using scoped dialog grants and persisted scope. The hidden path smoke covers the conversion backend; the interactive GUI permission prompt still needs a real acceptance pass.
 - AVIF benchmark on Apple Silicon before changing defaults.
 - `.dmg` Developer ID signing, `notarytool` submission, stapling, and Gatekeeper assessment.
+- App Store Connect upload/TestFlight/review remain account operations outside this repository.

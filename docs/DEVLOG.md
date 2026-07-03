@@ -5,6 +5,28 @@
 
 ---
 
+## 2026-07-03 — macOS 发布闭环:DMG/MAS 脚本、scoped persistence 与 GitHub-hosted smoke
+
+Codex 在 macOS 第一批能力之后补齐发布链路的 repo 侧闭环:
+
+- **macOS scoped dialog 持久化**:前端 Tauri dialog 在 macOS 设置 `fileAccessMode: "scoped"`;后端注册 `tauri-plugin-fs` 和 `tauri-plugin-persisted-scope`,capability 仅加入 `fs:scope`,用于保存 dialog 授权范围。导入/转换路径继续通过 `macos_security.rs` 的 RAII start/stop 进入 security-scoped resource 生命周期。
+- **直发 DMG 入口**:新增 `pnpm run release:macos` / `release:macos:verify`,构建前清理旧 `.dmg`,构建后用 `scripts/check-macos-bundle-artifacts.mjs` 校验命名、版本、非空 artifact;verifier 会读取 `.app` 的 `CFBundleExecutable`,不再硬编码可执行名。
+- **显式公证闭环**:新增 `pnpm run release:macos:notarize` 与 `scripts/notarize-macos-dmg.mjs`,支持 notarytool keychain profile、App Store Connect API key 或 Apple ID/app-specific password 三种凭据,并串起 `notarytool submit --wait`、`stapler staple`、`spctl` 和 signed/notarized artifact verifier。
+- **MAS candidate 入口**:新增 `scripts/prepare-macos-mas-release.mjs`,从 `APPLE_TEAM_ID` 与 provisioning profile 生成 team/application identifier entitlement、MAS config 和 `embedded.provisionprofile` 映射;新增 `pnpm run release:macos:mas` 构建 signed `.app` candidate,`pnpm run release:macos:mas:pkg` 用 `productbuild` 生成可上传 `.pkg`。
+- **GitHub-hosted macOS smoke 升级**:`.github/workflows/macos-smoke.yml` 默认在 `macos-15` arm64 上生成 HEIC fixture 并跑 ImageIO 路径转换 smoke;手动触发可构建 unsigned `.dmg`,或导入 Apple `.p12` secrets 后构建 signed/notarized `.dmg`;也可生成 MAS signed `.app` candidate 和可选 `.pkg` artifact。
+- **guardrail 加固**:`release:macos:check` 现在要求 macOS release/MAS/notarize/pkg 脚本存在,检查 fs/persisted-scope 依赖与注册、`fs:scope` capability、MAS `Info.macos.mas.plist` 加密声明、generated entitlement 关键字段和 macOS README 发布步骤。
+
+限制:
+
+- 本仓库已具备自动化入口和 CI wiring,但真实 Developer ID 签名、公证、MAS provisioning、App Store Connect 上传/TestFlight/审核仍依赖 Apple Developer 账号和仓库 secrets。
+- MAS sandbox 的 GUI 文件选择授权 prompt、重启后授权恢复和输出目录交互仍需用签名 MAS candidate 在真实 macOS 桌面上人工验收。
+
+验证:
+
+- 本机后续检查见本次 Codex 输出;macOS `.dmg`/MAS artifact 构建、公证和 Gatekeeper 只能在 GitHub-hosted macOS 或真实 macOS 机器上实跑。
+
+---
+
 ## 2026-07-03 — Windows 阶段第一批:runner smoke 与直发安装包闭环
 
 Codex 在 macOS HEIC GitHub-hosted smoke 通过后,启动 Windows 阶段第一批,先落地不需要签名证书/Partner Center 的真实 runner 闭环:
