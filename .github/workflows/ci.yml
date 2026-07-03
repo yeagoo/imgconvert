@@ -1,16 +1,6 @@
 name: CI
 
 on:
-  push:
-    branches:
-      - main
-    paths-ignore:
-      - "docs/**"
-      - "*.md"
-  pull_request:
-    paths-ignore:
-      - "docs/**"
-      - "*.md"
   workflow_dispatch:
     inputs:
       platform_checks:
@@ -119,7 +109,6 @@ jobs:
 
   security:
     name: Security And Licenses
-    if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
@@ -145,7 +134,6 @@ jobs:
 
   e2e:
     name: Web Preview E2E
-    if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-24.04
     needs: frontend
     timeout-minutes: 25
