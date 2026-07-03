@@ -14,6 +14,8 @@
   } from "phosphor-svelte";
   import { Button } from "$lib/components/ui/button";
   import Dropzone from "$lib/components/Dropzone.svelte";
+  import LegalDialog from "$lib/components/LegalDialog.svelte";
+  import PluginDiagnosticsDialog from "$lib/components/PluginDiagnosticsDialog.svelte";
   import QueueItem from "$lib/components/QueueItem.svelte";
   import SettingsBar from "$lib/components/SettingsBar.svelte";
   import Topbar from "$lib/components/Topbar.svelte";
@@ -41,6 +43,8 @@
   const overallProgress = $derived(
     queue.length ? Math.round((settledCount / queue.length) * 100) : 0,
   );
+  let legalOpen = $state(false);
+  let pluginDiagnosticsOpen = $state(false);
   const progressLabel = $derived(
     queue.length
       ? `${doneCount}/${queue.length} 完成${skippedCount ? ` · ${skippedCount} 跳过` : ""}${errorCount ? ` · ${errorCount} 错误` : ""}`
@@ -97,54 +101,64 @@
     {/if}
 
     <div class="shrink-0 border-b bg-background/95 px-4 py-3 backdrop-blur">
-      <Topbar />
+      <Topbar
+        onOpenLegal={() => (legalOpen = true)}
+        onOpenPluginDiagnostics={() => (pluginDiagnosticsOpen = true)}
+      />
     </div>
 
     <div class="min-h-0 flex-1 overflow-y-auto">
-      <div class="mx-auto flex w-full max-w-[1440px] flex-col gap-4 px-4 py-4 pb-28">
-        <Dropzone />
-        <SettingsBar />
+      <div
+        class="mx-auto grid w-full max-w-[1500px] grid-cols-1 gap-4 px-4 py-4 pb-28 xl:grid-cols-[minmax(0,1fr)_390px] xl:items-start 2xl:grid-cols-[minmax(0,1fr)_420px]"
+      >
+        <section class="flex min-w-0 flex-col gap-4">
+          <Dropzone />
 
-        <section class="flex min-h-[18rem] flex-col gap-3">
-          <div class="rounded-md border bg-card px-3 py-2">
-            <div class="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
-              {#if runningCount}
-                <ArrowsClockwise size={15} class="animate-spin text-primary" />
-              {:else if errorCount}
-                <WarningCircle size={15} weight="fill" class="text-destructive" />
-              {:else if settledCount && settledCount === queue.length && !skippedCount}
-                <CheckCircle size={15} weight="fill" class="text-emerald-600" />
-              {:else if skippedCount}
-                <WarningCircle size={15} weight="fill" class="text-muted-foreground" />
+          <section class="flex min-h-[18rem] flex-col gap-3">
+            <div class="rounded-md border bg-card px-3 py-2">
+              <div class="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+                {#if runningCount}
+                  <ArrowsClockwise size={15} class="animate-spin text-primary" />
+                {:else if errorCount}
+                  <WarningCircle size={15} weight="fill" class="text-destructive" />
+                {:else if settledCount && settledCount === queue.length && !skippedCount}
+                  <CheckCircle size={15} weight="fill" class="text-emerald-600" />
+                {:else if skippedCount}
+                  <WarningCircle size={15} weight="fill" class="text-muted-foreground" />
+                {/if}
+                <span class="truncate">{progressLabel}</span>
+              </div>
+
+              {#if queue.length}
+                <div class="mt-2 h-1.5 overflow-hidden rounded-full bg-muted">
+                  <div
+                    class="h-full rounded-full bg-primary transition-all duration-300 ease-[var(--motion-ease-img)]"
+                    style={`width: ${overallProgress}%`}
+                  ></div>
+                </div>
               {/if}
-              <span class="truncate">{progressLabel}</span>
             </div>
 
-            {#if queue.length}
-              <div class="mt-2 h-1.5 overflow-hidden rounded-full bg-muted">
-                <div
-                  class="h-full rounded-full bg-primary transition-all duration-300 ease-[var(--motion-ease-img)]"
-                  style={`width: ${overallProgress}%`}
-                ></div>
-              </div>
-            {/if}
-          </div>
-
-          <ul
-            class="grid grid-cols-1 content-start gap-3 md:grid-cols-2 xl:grid-cols-3"
-            aria-label="转换队列"
-          >
-            {#each queue as item (item.key)}
-              <QueueItem {item} />
-            {:else}
-              <li
-                class="col-span-full flex min-h-48 items-center justify-center rounded-lg border border-dashed p-8 text-sm text-muted-foreground"
-              >
-                还没有文件
-              </li>
-            {/each}
-          </ul>
+            <ul
+              class="grid grid-cols-1 content-start gap-3 md:grid-cols-2 2xl:grid-cols-3"
+              aria-label="转换队列"
+            >
+              {#each queue as item (item.key)}
+                <QueueItem {item} />
+              {:else}
+                <li
+                  class="col-span-full flex min-h-48 items-center justify-center rounded-lg border border-dashed p-8 text-sm text-muted-foreground"
+                >
+                  还没有文件
+                </li>
+              {/each}
+            </ul>
+          </section>
         </section>
+
+        <aside class="min-w-0 xl:sticky xl:top-4">
+          <SettingsBar variant="panel" />
+        </aside>
       </div>
     </div>
 
@@ -212,4 +226,7 @@
       {/if}
     </footer>
   </main>
+
+  <PluginDiagnosticsDialog bind:open={pluginDiagnosticsOpen} />
+  <LegalDialog bind:open={legalOpen} />
 </IconContext>

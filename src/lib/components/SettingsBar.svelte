@@ -21,9 +21,12 @@
     supportsLossless,
     ui,
   } from "$lib/state.svelte";
+  import { cn } from "$lib/utils.js";
 
+  let { variant = "bar" }: { variant?: "bar" | "panel" } = $props();
   let outputMessage = $state("");
   const busy = $derived(ui.converting || ui.importing);
+  const isPanel = $derived(variant === "panel");
 
   function isString(value: string | null): value is string {
     return value !== null;
@@ -203,8 +206,35 @@
   }
 </script>
 
-<section class="rounded-lg border bg-card p-4">
-  <div class="grid gap-4 lg:grid-cols-[220px_minmax(220px,1fr)_180px_180px_220px]">
+<section class={cn("rounded-lg border bg-card p-4", isPanel && "h-fit")}>
+  <div
+    class={cn(
+      "grid gap-4",
+      isPanel ? "grid-cols-1" : "lg:grid-cols-[220px_minmax(220px,1fr)_180px_180px_220px]",
+    )}
+  >
+    {#if isPanel}
+      <div class="flex items-center justify-between gap-3 border-b pb-3">
+        <div class="min-w-0">
+          <h2 class="text-sm font-semibold">转换设置</h2>
+          <p class="mt-1 truncate text-xs text-muted-foreground">
+            {settings.format.toUpperCase()} · {qualityTitle}
+            {qualityLabel}
+          </p>
+        </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          onclick={resetItemFormats}
+          disabled={busy || !queue.length}
+          class="shrink-0"
+        >
+          <ArrowsClockwise weight="duotone" />
+          跟随全局
+        </Button>
+      </div>
+    {/if}
+
     <div class="flex flex-col gap-1.5">
       <Label class="text-xs text-muted-foreground">目标格式</Label>
       <FormatSelect
@@ -216,7 +246,7 @@
       />
     </div>
 
-    <div class="flex min-w-0 flex-col gap-2" class:opacity-40={!qualityEnabled || busy}>
+    <div class={cn("flex min-w-0 flex-col gap-2", !qualityEnabled || busy ? "opacity-40" : "")}>
       <div class="flex items-center justify-between gap-3">
         <Label class="text-xs text-muted-foreground">{qualityTitle}</Label>
         <b class="tabular-nums text-sm text-foreground">{qualityLabel}</b>
@@ -234,7 +264,7 @@
       </div>
     </div>
 
-    <div class="flex min-w-0 flex-col gap-2" class:opacity-40={busy}>
+    <div class={cn("flex min-w-0 flex-col gap-2", busy ? "opacity-40" : "")}>
       <div class="flex items-center justify-between gap-3">
         <Label class="text-xs text-muted-foreground">并发</Label>
         <b class="tabular-nums text-sm text-foreground">{concurrencyLabel}</b>
@@ -280,7 +310,12 @@
       />
     </div>
 
-    <div class="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-2 lg:col-span-3">
+    <div
+      class={cn(
+        "flex min-w-0 flex-wrap gap-x-5 gap-y-2",
+        isPanel ? "items-start border-t pt-3" : "items-center lg:col-span-3",
+      )}
+    >
       <div class="flex items-center gap-2" class:opacity-40={!canLossless || busy}>
         <Switch
           bind:checked={settings.lossless}
@@ -372,12 +407,19 @@
       </div>
     </div>
 
-    <div class="flex items-center gap-2">
-      <Button variant="ghost" size="sm" onclick={resetItemFormats} disabled={busy || !queue.length}>
-        <ArrowsClockwise weight="duotone" />
-        跟随全局格式
-      </Button>
-    </div>
+    {#if !isPanel}
+      <div class="flex items-center gap-2">
+        <Button
+          variant="ghost"
+          size="sm"
+          onclick={resetItemFormats}
+          disabled={busy || !queue.length}
+        >
+          <ArrowsClockwise weight="duotone" />
+          跟随全局格式
+        </Button>
+      </div>
+    {/if}
 
     <div class="flex min-w-0 items-center gap-2">
       <Button variant="ghost" size="sm" onclick={pickOut} disabled={busy}>
@@ -397,7 +439,7 @@
       {/if}
     </div>
 
-    <div class="flex min-w-0 flex-col gap-2 border-t pt-3 lg:col-span-5">
+    <div class={cn("flex min-w-0 flex-col gap-2 border-t pt-3", isPanel ? "" : "lg:col-span-5")}>
       <div class="flex items-center justify-between gap-3">
         <Label class="text-xs text-muted-foreground">格式参数</Label>
         {#if settings.format === "jpeg"}
