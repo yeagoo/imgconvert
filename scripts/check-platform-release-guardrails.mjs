@@ -153,6 +153,12 @@ function checkMacosRuntimeGuardrails() {
       failures.push(`${script} is required for macOS runtime/build smoke`);
     }
   }
+  const macosWorkflow = readText(path.join(repoRoot, ".github", "workflows", "macos-smoke.yml"));
+  for (const expected of ["Verify macOS runner architecture", "uname -m", "arm64"]) {
+    if (!macosWorkflow.includes(expected)) {
+      failures.push(`macOS Smoke workflow must verify ${expected}`);
+    }
+  }
 
   const cargoToml = readText(path.join(repoRoot, "src-tauri", "Cargo.toml"));
   const libRs = readText(path.join(repoRoot, "src-tauri", "src", "lib.rs"));

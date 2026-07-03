@@ -44,6 +44,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Verify macOS runner architecture
+        run: |
+          echo "macOS version: $(sw_vers -productVersion)"
+          echo "Runner architecture: $(uname -m)"
+          if [ "$(uname -m)" != "arm64" ]; then
+            echo "macOS Smoke expects arm64 runner, got $(uname -m)"
+            exit 1
+          fi
+
       - name: Install native codec build tools
         run: brew install cmake meson ninja nasm
 
