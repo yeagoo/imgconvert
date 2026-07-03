@@ -131,9 +131,28 @@ jobs:
               if ($name -and $envNames -contains $name) {
                 Set-Item -Path "Env:$name" -Value $value
                 if ($name -ieq "Path") {
-                  $value -split ";" |
-                    Where-Object { $_ -and (Test-Path $_) -and $_ -notlike "*\WindowsApps" } |
-                    ForEach-Object { Add-Content -Path $env:GITHUB_PATH -Value $_ }
+                  $pathEntries = @()
+                  $pathEntries += $value -split ";"
+                  $pathEntries += $env:Path -split ";"
+                  $seen = @{}
+                  $sanitizedPath = $pathEntries |
+                    Where-Object {
+                      $_ -and
+                      (Test-Path $_) -and
+                      $_ -notlike "*\WindowsApps" -and
+                      $_ -notlike "*\Git\usr\bin" -and
+                      $_ -notlike "*\Git\mingw64\bin"
+                    } |
+                    ForEach-Object {
+                      $resolvedPath = [System.IO.Path]::GetFullPath($_).TrimEnd("\")
+                      $key = $resolvedPath.ToLowerInvariant()
+                      if (-not $seen.ContainsKey($key)) {
+                        $seen[$key] = $true
+                        $resolvedPath
+                      }
+                    }
+                  $env:Path = ($sanitizedPath -join ";")
+                  Add-Content -Path $env:GITHUB_ENV -Value "Path=$env:Path"
                 } else {
                   Add-Content -Path $env:GITHUB_ENV -Value "$name=$value"
                 }
