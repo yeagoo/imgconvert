@@ -69,6 +69,21 @@ jobs:
           ninja --version
           nasm -v
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.4
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          components: rustfmt, clippy
+
       - name: Configure MSVC build environment
         shell: pwsh
         run: |
@@ -81,44 +96,44 @@ jobs:
           if (-not (Test-Path $vsDevCmd)) {
             throw "VsDevCmd.bat was not found at $vsDevCmd"
           }
+          $envNames = @(
+            "DevEnvDir",
+            "ExtensionSdkDir",
+            "Framework40Version",
+            "FrameworkDir",
+            "FrameworkDIR64",
+            "FrameworkVersion",
+            "FrameworkVersion64",
+            "INCLUDE",
+            "LIB",
+            "LIBPATH",
+            "Path",
+            "UCRTVersion",
+            "UniversalCRTSdkDir",
+            "VCIDEInstallDir",
+            "VCINSTALLDIR",
+            "VCToolsInstallDir",
+            "VCToolsRedistDir",
+            "VCToolsVersion",
+            "VisualStudioVersion",
+            "VSINSTALLDIR",
+            "WindowsLibPath",
+            "WindowsSdkBinPath",
+            "WindowsSdkDir",
+            "WindowsSDKLibVersion",
+            "WindowsSDKVersion",
+            "WindowsSdkVerBinPath"
+          )
           cmd /c "`"$vsDevCmd`" -arch=x64 -host_arch=x64 && set" | ForEach-Object {
             if ($_ -match "^(.*?)=(.*)$") {
               $name = $matches[1]
               $value = $matches[2]
-              $envNames = @(
-                "DevEnvDir",
-                "ExtensionSdkDir",
-                "Framework40Version",
-                "FrameworkDir",
-                "FrameworkDIR64",
-                "FrameworkVersion",
-                "FrameworkVersion64",
-                "INCLUDE",
-                "LIB",
-                "LIBPATH",
-                "Path",
-                "UCRTVersion",
-                "UniversalCRTSdkDir",
-                "VCIDEInstallDir",
-                "VCINSTALLDIR",
-                "VCToolsInstallDir",
-                "VCToolsRedistDir",
-                "VCToolsVersion",
-                "VisualStudioVersion",
-                "VSINSTALLDIR",
-                "WindowsLibPath",
-                "WindowsSdkBinPath",
-                "WindowsSdkDir",
-                "WindowsSDKLibVersion",
-                "WindowsSDKVersion",
-                "WindowsSdkVerBinPath"
-              )
               if ($name -and $envNames -contains $name) {
                 Set-Item -Path "Env:$name" -Value $value
                 if ($name -ieq "Path") {
-                  $value -split ";" | Where-Object { $_ -and (Test-Path $_) } | ForEach-Object {
-                    Add-Content -Path $env:GITHUB_PATH -Value $_
-                  }
+                  $value -split ";" |
+                    Where-Object { $_ -and (Test-Path $_) -and $_ -notlike "*\WindowsApps" } |
+                    ForEach-Object { Add-Content -Path $env:GITHUB_PATH -Value $_ }
                 } else {
                   Add-Content -Path $env:GITHUB_ENV -Value "$name=$value"
                 }
@@ -135,21 +150,6 @@ jobs:
           }
           cl
           Write-Host "Using Rust MSVC linker: $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER"
-
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10.34.4
-          run_install: false
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
-
-      - uses: dtolnay/rust-toolchain@1.96.0
-        with:
-          components: rustfmt, clippy
 
       - run: pnpm install --frozen-lockfile
 
