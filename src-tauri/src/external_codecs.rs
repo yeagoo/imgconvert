@@ -21,6 +21,8 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(target_os = "macos")]
 use crate::macos_system_codecs;
+#[cfg(target_os = "windows")]
+use crate::windows_system_codecs;
 
 const HEIC_HELPERS: &[&str] = &["heif-convert", "heif-dec", "imgconvert-heic-helper"];
 const HEIC_EXTENSIONS: &[&str] = &["heic", "heif", "hif"];
@@ -84,6 +86,7 @@ pub struct HeicCodecDiagnostics {
     pub disabled_reason: Option<String>,
     pub extensions: Vec<&'static str>,
     pub active_provider: Option<CodecProviderDiagnostic>,
+    pub system_codecs: Vec<SystemCodecDiagnostic>,
     pub selected_helper: SelectedHelperDiagnostic,
     pub manifest_dirs: Vec<ManifestSearchDirDiagnostic>,
     pub system_helpers: Vec<SystemHelperDiagnostic>,
@@ -100,6 +103,17 @@ pub struct CodecProviderDiagnostic {
     pub command: String,
     pub path: String,
     pub args: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemCodecDiagnostic {
+    pub id: String,
+    pub kind: String,
+    pub available: bool,
+    pub readable: Vec<String>,
+    pub message: String,
+    pub install_hint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -220,6 +234,7 @@ pub fn codec_diagnostics() -> CodecDiagnostics {
             extensions: HEIC_EXTENSIONS.to_vec(),
             active_provider: active_system_provider
                 .or_else(|| active_helper.as_ref().map(Helper::provider_diagnostic)),
+            system_codecs: system_codec_diagnostics(),
             selected_helper: selected_helper_diagnostic(),
             manifest_dirs: manifest_dir_diagnostics(),
             system_helpers: system_helper_diagnostics(),
@@ -265,7 +280,12 @@ fn system_heic_available() -> bool {
     macos_system_codecs::heic_available()
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+fn system_heic_available() -> bool {
+    windows_system_codecs::heic_available()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn system_heic_available() -> bool {
     false
 }
@@ -275,7 +295,12 @@ fn system_heic_provider_info() -> Option<CodecProviderInfo> {
     macos_system_codecs::heic_provider_info()
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+fn system_heic_provider_info() -> Option<CodecProviderInfo> {
+    windows_system_codecs::heic_provider_info()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn system_heic_provider_info() -> Option<CodecProviderInfo> {
     None
 }
@@ -285,7 +310,12 @@ fn system_heic_provider_diagnostic() -> Option<CodecProviderDiagnostic> {
     macos_system_codecs::heic_provider_diagnostic()
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+fn system_heic_provider_diagnostic() -> Option<CodecProviderDiagnostic> {
+    windows_system_codecs::heic_provider_diagnostic()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn system_heic_provider_diagnostic() -> Option<CodecProviderDiagnostic> {
     None
 }
@@ -295,9 +325,32 @@ fn system_decode_heic_to_png(input: &Path) -> Result<Vec<u8>, String> {
     macos_system_codecs::decode_heic_to_png(input)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+fn system_decode_heic_to_png(input: &Path) -> Result<Vec<u8>, String> {
+    windows_system_codecs::decode_heic_to_png(input)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn system_decode_heic_to_png(_input: &Path) -> Result<Vec<u8>, String> {
-    Err("系统 HEIC 解码仅在 macOS ImageIO 后端可用".to_string())
+    Err("系统 HEIC 解码仅在 macOS ImageIO 或 Windows WIC 后端可用".to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn system_codec_diagnostics() -> Vec<SystemCodecDiagnostic> {
+    let diagnostic = windows_system_codecs::heic_system_diagnostic();
+    vec![SystemCodecDiagnostic {
+        id: diagnostic.id,
+        kind: diagnostic.kind,
+        available: diagnostic.available,
+        readable: diagnostic.readable,
+        message: diagnostic.message,
+        install_hint: diagnostic.install_hint,
+    }]
+}
+
+#[cfg(not(target_os = "windows"))]
+fn system_codec_diagnostics() -> Vec<SystemCodecDiagnostic> {
+    Vec::new()
 }
 
 pub fn set_selected_heic_helper(path: Option<String>) -> Result<SelectedHelperDiagnostic, String> {

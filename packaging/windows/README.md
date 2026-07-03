@@ -28,18 +28,55 @@ Direct distribution build on Windows:
 pnpm run release:windows
 ```
 
-GitHub Actions also exposes `Windows Smoke`. Pushes to `main` run Windows
-guardrails, Rust backend checks, and a hidden real conversion smoke. Manual runs
-can enable `build_direct` to build unsigned `.msi` and NSIS `.exe` artifacts.
-Code signing is not configured in this repository; sign installers only in the
-release runner or signing environment.
+GitHub Actions exposes the manual-only `Windows Smoke` workflow. This keeps
+runner cost predictable: the default run performs Windows guardrails, Rust
+backend checks, and a hidden real conversion smoke. Manual runs can enable
+`build_direct` to build `.msi` and NSIS `.exe` artifacts. Add `install_smoke`
+to install each generated installer and run the hidden package smoke from the
+installed `ImgConvert.exe`.
 
-Microsoft Store is a separate candidate path. Tauri does not make MSIX a first-class bundle target for this repo, so the store route still needs a Windows runner, MSIX packaging, `runFullTrust`, Partner Center setup, and real install smoke testing.
+Signed direct distribution:
+
+```powershell
+$env:WINDOWS_CERTIFICATE_BASE64 = "<base64 pfx>"
+$env:WINDOWS_CERTIFICATE_PASSWORD = "<pfx password>"
+$env:WINDOWS_TIMESTAMP_URL = "http://timestamp.digicert.com"
+pnpm run release:windows
+pnpm run release:windows:sign
+pnpm run release:windows:install-smoke
+```
+
+`release:windows:sign` also accepts `WINDOWS_CERTIFICATE_PATH` or
+`WINDOWS_CERTIFICATE_SHA1`. The script signs with SHA-256 and RFC3161 timestamp
+metadata, then verifies Authenticode with `signtool verify /pa /all`.
+
+Microsoft Store is a separate candidate path. Tauri does not make MSIX a
+first-class bundle target for this repo, so the store route uses an explicit
+MSIX manifest template with `runFullTrust`. Prepare the manifest with Store
+identity values from Partner Center:
 
 Store candidate preflight must compile with external codec/helper discovery disabled:
 
-```bash
-IMGCONVERT_DISABLE_EXTERNAL_CODECS=1 pnpm run release:windows:store:check
+```powershell
+$env:IMGCONVERT_DISABLE_EXTERNAL_CODECS = "1"
+$env:WINDOWS_STORE_IDENTITY_NAME = "<Partner Center package identity name>"
+$env:WINDOWS_STORE_PUBLISHER = "CN=<Partner Center publisher id>"
+$env:WINDOWS_STORE_PUBLISHER_DISPLAY_NAME = "<publisher display name>"
+$env:WINDOWS_STORE_VERSION = "0.1.0.0"
+pnpm run release:windows:store:check
+pnpm run release:windows:msix:prepare
 ```
 
-Windows HEIC remains decode-only by product policy. The future system route is WIC with runtime detection of the HEIF/HEVC extensions; the optional free HEIC helper is a separately distributed decode-only plugin and must not be bundled into the store main package unless the channel rules are revalidated.
+Actual Store submission still requires a Windows SDK packaging step
+(`makeappx.exe`/`signtool.exe` or Partner Center tooling), Store assets, age
+rating/privacy metadata, and a real install smoke on the submitted package. The
+main package must keep `IMGCONVERT_DISABLE_EXTERNAL_CODECS=1`; optional HEIC
+helpers must not be bundled into the Store package unless channel rules are
+revalidated.
+
+Windows HEIC remains decode-only by product policy. The system route uses WIC
+runtime detection of the Microsoft HEIF Image Extensions and HEVC Video
+Extensions. When those are present, capabilities expose a read-only
+`system-wic` provider for `heic`/`heif`/`hif`. When missing, plugin diagnostics
+show a clear install hint. The optional free HEIC helper remains a separately
+distributed decode-only plugin and is not bundled into the main app.

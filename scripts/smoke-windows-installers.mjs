@@ -1,0 +1,238 @@
+// SPDX-License-Identifier: Apache-2.0
+
+import { mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const isWindows = os.platform() === "win32";
+let tmpRoot = null;
+
+const options = {
+  profile: "release",
+  bundles: ["msi", "nsis"],
+  allowNonWindows: false,
+  keepInstalled: false,
+};
+
+for (const arg of process.argv.slice(2)) {
+  if (arg === "--") {
+    continue;
+  } else if (arg.startsWith("--profile=")) {
+    options.profile = arg.slice("--profile=".length);
+  } else if (arg.startsWith("--bundles=")) {
+    options.bundles = parseBundles(arg.slice("--bundles=".length));
+  } else if (arg === "--allow-non-windows") {
+    options.allowNonWindows = true;
+  } else if (arg === "--keep-installed") {
+    options.keepInstalled = true;
+  } else if (arg === "--help" || arg === "-h") {
+    printHelp();
+    process.exit(0);
+  } else {
+    fail(`unknown argument: ${arg}`);
+  }
+}
+
+if (!isWindows && !options.allowNonWindows) {
+  fail(
+    "Windows installer install smoke must run on Windows. Pass --allow-non-windows only for preflight.",
+  );
+}
+if (!["debug", "release"].includes(options.profile)) {
+  fail(`unsupported profile: ${options.profile}`);
+}
+for (const bundle of options.bundles) {
+  if (!["msi", "nsis"].includes(bundle)) {
+    fail(`unsupported Windows bundle: ${bundle}`);
+  }
+}
+
+const artifacts = collectWindowsArtifacts(options.profile, options.bundles);
+if (artifacts.length === 0) {
+  fail("no Windows installers found for install smoke");
+}
+
+if (!isWindows) {
+  for (const artifact of artifacts) {
+    console.log(
+      `preflight artifact ${path.relative(repoRoot, artifact)} (${statSync(artifact).size} bytes)`,
+    );
+  }
+  process.exit(0);
+}
+
+tmpRoot = mkdtempSync(path.join(os.tmpdir(), "imgconvert-windows-install-smoke-"));
+
+for (const artifact of artifacts) {
+  if (artifact.toLowerCase().endsWith(".exe")) {
+    smokeNsisInstaller(artifact);
+  } else if (artifact.toLowerCase().endsWith(".msi")) {
+    smokeMsiInstaller(artifact);
+  }
+}
+
+if (!options.keepInstalled) {
+  rmSync(tmpRoot, { recursive: true, force: true });
+}
+
+console.log(`Windows installer install smoke completed (${artifacts.length} artifact(s)).`);
+
+function smokeNsisInstaller(installer) {
+  const installDir = path.join(requiredTmpRoot(), "nsis-install");
+  run(installer, ["/S", `/D=${installDir}`], `install NSIS ${path.basename(installer)}`);
+  const executable = findInstalledExecutable([installDir, ...standardInstallRoots()]);
+  runInstalledSmoke(executable, "nsis");
+  if (!options.keepInstalled) {
+    const uninstaller = findUninstaller(installDir);
+    if (uninstaller) {
+      run(uninstaller, ["/S"], "uninstall NSIS smoke package", { allowFailure: true });
+    }
+  }
+}
+
+function smokeMsiInstaller(installer) {
+  const log = path.join(requiredTmpRoot(), "msi-install.log");
+  run(
+    "msiexec.exe",
+    ["/i", installer, "/qn", "/norestart", "/L*v", log],
+    `install MSI ${path.basename(installer)}`,
+  );
+  const executable = findInstalledExecutable(standardInstallRoots());
+  runInstalledSmoke(executable, "msi");
+  if (!options.keepInstalled) {
+    run("msiexec.exe", ["/x", installer, "/qn", "/norestart"], "uninstall MSI smoke package", {
+      allowFailure: true,
+    });
+  }
+}
+
+function runInstalledSmoke(executable, label) {
+  run(executable, [], `installed ${label} package conversion smoke`, {
+    env: {
+      IMGCONVERT_PACKAGE_CONVERT_SMOKE: "1",
+      IMGCONVERT_PACKAGE_CONVERT_SMOKE_FORMATS: "jpeg,webp,png,avif",
+      IMGCONVERT_PACKAGE_CONVERT_SMOKE_DIR: path.join(requiredTmpRoot(), `${label}-convert`),
+    },
+  });
+}
+
+function findInstalledExecutable(roots) {
+  const candidates = roots
+    .filter(Boolean)
+    .flatMap((root) => collectFiles(root))
+    .filter((file) => path.basename(file).toLowerCase() === "imgconvert.exe")
+    .sort((a, b) => b.length - a.length);
+  if (!candidates[0]) {
+    fail(`installed ImgConvert.exe was not found under: ${roots.filter(Boolean).join(", ")}`);
+  }
+  return candidates[0];
+}
+
+function findUninstaller(root) {
+  return collectFiles(root).find((file) => path.basename(file).toLowerCase().includes("uninstall"));
+}
+
+function standardInstallRoots() {
+  return [
+    process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, "Programs", "ImgConvert"),
+    process.env.ProgramFiles && path.join(process.env.ProgramFiles, "ImgConvert"),
+    process.env["ProgramFiles(x86)"] && path.join(process.env["ProgramFiles(x86)"], "ImgConvert"),
+  ].filter(Boolean);
+}
+
+function collectWindowsArtifacts(profile, bundles) {
+  const expectedExtensions = {
+    msi: ".msi",
+    nsis: ".exe",
+  };
+  const bundleRoot = path.join(cargoTargetRoot(), profile, "bundle");
+  const artifacts = [];
+  for (const bundle of bundles) {
+    const bundleDir = path.join(bundleRoot, bundle);
+    artifacts.push(
+      ...collectFiles(bundleDir).filter((file) =>
+        file.toLowerCase().endsWith(expectedExtensions[bundle]),
+      ),
+    );
+  }
+  return artifacts.sort();
+}
+
+function collectFiles(dir) {
+  try {
+    const files = [];
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const entryPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        files.push(...collectFiles(entryPath));
+      } else if (entry.isFile()) {
+        files.push(entryPath);
+      }
+    }
+    return files;
+  } catch {
+    return [];
+  }
+}
+
+function parseBundles(value) {
+  return value
+    .split(",")
+    .map((bundle) => bundle.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function run(command, args, label, options = {}) {
+  console.log(`\n> ${label}`);
+  const result = spawnSync(command, args, {
+    cwd: repoRoot,
+    env: { ...process.env, ...(options.env ?? {}) },
+    stdio: "inherit",
+  });
+  if (result.error) {
+    if (options.allowFailure) {
+      console.warn(`${label} failed to start: ${result.error.message}`);
+      return;
+    }
+    fail(`${label} failed to start: ${result.error.message}`);
+  }
+  if (result.status !== 0) {
+    if (options.allowFailure) {
+      console.warn(`${label} failed with exit code ${result.status ?? 1}`);
+      return;
+    }
+    fail(`${label} failed with exit code ${result.status ?? 1}`);
+  }
+}
+
+function requiredTmpRoot() {
+  if (!tmpRoot) {
+    fail("temporary install smoke directory was not initialized");
+  }
+  return tmpRoot;
+}
+
+function cargoTargetRoot() {
+  return process.env.CARGO_TARGET_DIR
+    ? path.resolve(process.env.CARGO_TARGET_DIR)
+    : path.join(repoRoot, "src-tauri", "target");
+}
+
+function printHelp() {
+  console.log(`Usage: node scripts/smoke-windows-installers.mjs [options]
+
+Options:
+  --profile=<profile>     release or debug, defaults to release.
+  --bundles=<list>        Comma-separated bundles, defaults to msi,nsis.
+  --allow-non-windows     Allow non-Windows artifact preflight.
+  --keep-installed        Leave installed packages and temp directory in place.
+`);
+}
+
+function fail(message) {
+  console.error(message);
+  process.exit(1);
+}

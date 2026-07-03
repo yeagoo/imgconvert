@@ -125,11 +125,19 @@ mod tests {
     }
 
     #[test]
-    fn selected_paths_accept_file_urls_for_macos_scoped_dialogs() {
-        let paths = user_selected_paths(vec!["file:///tmp/photo.png".to_string()]);
+    fn selected_paths_accept_file_urls_for_scoped_dialogs() {
+        #[cfg(windows)]
+        let (input, expected) = (
+            "file:///C:/Users/example/Pictures/photo.png",
+            Path::new(r"C:\Users\example\Pictures\photo.png"),
+        );
+        #[cfg(not(windows))]
+        let (input, expected) = ("file:///tmp/photo.png", Path::new("/tmp/photo.png"));
+
+        let paths = user_selected_paths(vec![input.to_string()]);
 
         assert_eq!(paths.len(), 1);
-        assert_eq!(paths[0].path(), Path::new("/tmp/photo.png"));
+        assert_eq!(paths[0].path(), expected);
     }
 
     #[test]

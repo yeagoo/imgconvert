@@ -1902,6 +1902,7 @@ dependencies = [
  "tauri-plugin-persisted-scope",
  "tauri-plugin-store",
  "tokio-util",
+ "windows",
 ]
 
 [[package]]

@@ -18,6 +18,7 @@
     type CodecDiagnostics,
     type ManifestDiagnostic,
     type ManifestSearchDirDiagnostic,
+    type SystemCodecDiagnostic,
     type SystemHelperDiagnostic,
   } from "$lib/state.svelte";
 
@@ -39,6 +40,9 @@
     heic?.manifestDirs.flatMap((dir) =>
       dir.manifests.filter((manifest) => manifest.status === "rejected"),
     ) ?? [],
+  );
+  const availableSystemCodecs = $derived(
+    heic?.systemCodecs.filter((codec) => codec.available) ?? [],
   );
   const availableHelpers = $derived(heic?.systemHelpers.filter((helper) => helper.available) ?? []);
 
@@ -169,8 +173,8 @@
         <div class="min-w-0 flex-1">
           <h2 id="plugin-diagnostics-title" class="text-sm font-semibold">插件诊断</h2>
           <p class="mt-1 text-xs text-muted-foreground">
-            HEIC 可选导入 provider、manifest 搜索路径与 helper 探测。macOS 使用系统 ImageIO;Linux
-            可用 heif-convert;Windows 可选择 imgconvert-heic-helper.exe。
+            HEIC 可选导入 provider、manifest 搜索路径与 helper 探测。macOS 使用系统 ImageIO;Windows
+            优先使用 WIC;Linux 可用 heif-convert。
           </p>
         </div>
         <Button variant="ghost" size="icon" title="刷新" onclick={refresh} disabled={loading}>
@@ -242,7 +246,9 @@
                         {heic.activeProvider.license ??
                           (heic.activeProvider.kind === "system-imageio"
                             ? "系统 ImageIO"
-                            : "系统 helper")}
+                            : heic.activeProvider.kind === "system-wic"
+                              ? "Windows WIC"
+                              : "系统 helper")}
                       </dd>
                     </div>
                     <div class="min-w-0 sm:col-span-2">
@@ -284,6 +290,7 @@
                 )}
                 {@render SummaryStat("可用 manifest", acceptedManifests.length)}
                 {@render SummaryStat("拒绝 manifest", rejectedManifests.length)}
+                {@render SummaryStat("系统 codec", availableSystemCodecs.length)}
                 {@render SummaryStat("系统 helper", availableHelpers.length)}
               </dl>
             </section>
@@ -295,9 +302,20 @@
               主程序不内置 HEIC codec,不链接 libheif,不分发 x265。HEIC 仅通过用户环境中的可选
               decode-only helper/provider 导入;插件许可、源码/NOTICE
               与专利风险需由插件分发方单独处理。商店或 Flatpak 构建可通过禁用外部 codec
-              自动发现保持主包边界。Windows 免费 HEIC 路线使用单独 helper,不依赖主程序购买或内置
-              Microsoft HEVC 扩展。
+              自动发现保持主包边界。Windows 优先探测系统 WIC HEIF/HEVC
+              扩展;缺失时可按诊断提示安装系统扩展, 或使用单独 helper,不把 HEIC codec 打进主程序。
             </p>
+          </section>
+
+          <section class="mt-3 rounded-lg border bg-card p-3">
+            <h3 class="text-sm font-semibold">系统 Codec</h3>
+            <div class="mt-2 grid gap-2 md:grid-cols-2">
+              {#each heic.systemCodecs as codec (codec.id)}
+                {@render SystemCodecRow(codec)}
+              {:else}
+                <p class="text-sm text-muted-foreground">当前平台没有系统 codec 探测项。</p>
+              {/each}
+            </div>
           </section>
 
           <section class="mt-3 rounded-lg border bg-card p-3">
@@ -393,6 +411,28 @@
   <div class="rounded-md border bg-background px-3 py-2">
     <dt class="text-muted-foreground">{label}</dt>
     <dd class="mt-1 text-lg font-semibold tabular-nums text-foreground">{value}</dd>
+  </div>
+{/snippet}
+
+{#snippet SystemCodecRow(codec: SystemCodecDiagnostic)}
+  <div class="rounded-md border bg-background p-3">
+    <div class="flex items-center justify-between gap-2">
+      <span class="font-mono text-xs font-medium">{codec.id}</span>
+      <span
+        class="rounded border px-1.5 py-0.5 text-[11px] {codec.available
+          ? 'border-emerald-500/35 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+          : 'bg-muted text-muted-foreground'}"
+      >
+        {codec.available ? "available" : "missing"}
+      </span>
+    </div>
+    <p class="mt-2 text-xs text-muted-foreground">{codec.message}</p>
+    {#if codec.installHint}
+      <p class="mt-2 text-xs text-muted-foreground">{codec.installHint}</p>
+    {/if}
+    <p class="mt-2 font-mono text-[11px] text-muted-foreground">
+      {codec.kind} · {codec.readable.join(" / ")}
+    </p>
   </div>
 {/snippet}
 

@@ -258,13 +258,43 @@ function checkWindowsRuntimeGuardrails() {
   if (!packageScripts["release:windows"]?.includes("check-windows-bundle-artifacts.mjs")) {
     failures.push("package.json must expose release:windows with installer artifact verification");
   }
+  if (!packageScripts["release:windows:sign"]?.includes("sign-windows-installers.mjs")) {
+    failures.push("package.json must expose release:windows:sign for Authenticode signing");
+  }
+  if (!packageScripts["release:windows:install-smoke"]?.includes("smoke-windows-installers.mjs")) {
+    failures.push("package.json must expose release:windows:install-smoke for install/start smoke");
+  }
+  if (
+    !packageScripts["release:windows:msix:prepare"]?.includes("prepare-windows-msix-release.mjs")
+  ) {
+    failures.push("package.json must expose release:windows:msix:prepare for Store manifest prep");
+  }
   for (const script of [
     "scripts/smoke-windows-runtime.mjs",
     "scripts/clean-windows-bundles.mjs",
     "scripts/check-windows-bundle-artifacts.mjs",
+    "scripts/sign-windows-installers.mjs",
+    "scripts/smoke-windows-installers.mjs",
+    "scripts/prepare-windows-msix-release.mjs",
   ]) {
     if (!existsSync(path.join(repoRoot, script))) {
       failures.push(`${script} is required for Windows direct runtime/build smoke`);
+    }
+  }
+  const windowsWorkflow = readText(
+    path.join(repoRoot, ".github", "workflows", "windows-smoke.yml"),
+  );
+  for (const expected of ["sign_direct", "install_smoke", "WINDOWS_CERTIFICATE_BASE64"]) {
+    if (!windowsWorkflow.includes(expected)) {
+      failures.push(`Windows Smoke workflow must support ${expected}`);
+    }
+  }
+  const windowsSystemCodecs = readText(
+    path.join(repoRoot, "src-tauri", "src", "windows_system_codecs.rs"),
+  );
+  for (const expected of ["system-wic", "HEIF Image Extensions", "HEVC Video Extensions"]) {
+    if (!windowsSystemCodecs.includes(expected)) {
+      failures.push(`Windows WIC HEIC diagnostics must mention ${expected}`);
     }
   }
 }
@@ -402,11 +432,21 @@ function checkWindowsStoreDocs() {
   for (const expected of [
     "MSIX",
     "runFullTrust",
+    "Partner Center",
     "IMGCONVERT_DISABLE_EXTERNAL_CODECS=1",
     "release:windows:store:check",
+    "release:windows:msix:prepare",
   ]) {
     if (!readme.includes(expected)) {
       failures.push(`packaging/windows/README.md must document ${expected}`);
+    }
+  }
+  const msixTemplate = readText(
+    path.join(repoRoot, "packaging", "windows", "msix", "AppxManifest.xml.template"),
+  );
+  for (const expected of ["runFullTrust", "Windows.FullTrustApplication", "desktop6:Extension"]) {
+    if (!msixTemplate.includes(expected)) {
+      failures.push(`MSIX manifest template must include ${expected}`);
     }
   }
 }

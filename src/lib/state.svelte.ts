@@ -47,6 +47,7 @@ export interface HeicCodecDiagnostics {
   disabledReason: string | null;
   extensions: string[];
   activeProvider: CodecProviderDiagnostic | null;
+  systemCodecs: SystemCodecDiagnostic[];
   selectedHelper: SelectedHelperDiagnostic;
   manifestDirs: ManifestSearchDirDiagnostic[];
   systemHelpers: SystemHelperDiagnostic[];
@@ -74,6 +75,14 @@ export interface SystemHelperDiagnostic {
   available: boolean;
   path: string | null;
   message: string | null;
+}
+export interface SystemCodecDiagnostic {
+  id: string;
+  kind: string;
+  available: boolean;
+  readable: string[];
+  message: string;
+  installHint: string | null;
 }
 export interface SelectedHelperDiagnostic {
   configured: boolean;
@@ -1459,9 +1468,11 @@ export async function checkEngine() {
           ? "系统 helper"
           : heicProvider?.kind === "system-imageio"
             ? "系统 ImageIO"
-            : heicProvider?.kind === "selected-helper"
-              ? "手动 helper"
-              : "可选 helper";
+            : heicProvider?.kind === "system-wic"
+              ? "Windows WIC"
+              : heicProvider?.kind === "selected-helper"
+                ? "手动 helper"
+                : "可选 helper";
     const heicText = capabilities.heic ? ` · HEIC 可选导入(${heicProviderText})` : "";
     engine.text = `Core 就绪 · ${capabilities.writable.map(formatLabel).join(" / ")}${heicText}`;
     engine.ok = capabilities.writable.length > 0;
@@ -1480,6 +1491,7 @@ export async function loadCodecDiagnostics(): Promise<CodecDiagnostics> {
         disabledReason: null,
         extensions: ["heic", "heif", "hif"],
         activeProvider: null,
+        systemCodecs: [],
         selectedHelper: {
           configured: false,
           available: false,

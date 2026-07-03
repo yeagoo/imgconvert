@@ -10,6 +10,8 @@ mod macos_security;
 mod macos_system_codecs;
 mod native_dialog;
 mod thumbnail;
+#[cfg(target_os = "windows")]
+mod windows_system_codecs;
 
 use convert::{
     BatchProgressEvent, BatchState, BatchSummary, Capabilities, ConversionPlanEntry,

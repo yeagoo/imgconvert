@@ -8,6 +8,16 @@ on:
         required: true
         default: false
         type: boolean
+      sign_direct:
+        description: Sign direct installers with Windows certificate secrets.
+        required: true
+        default: false
+        type: boolean
+      install_smoke:
+        description: Install built direct installers and run hidden package smoke.
+        required: true
+        default: false
+        type: boolean
       bundles:
         description: Comma-separated Tauri bundles for direct build.
         required: true
@@ -184,13 +194,38 @@ jobs:
       - name: Tauri backend Windows tests
         run: cargo +1.96.0 test --manifest-path src-tauri/Cargo.toml
 
+      - name: Check Windows signing secrets
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.sign_direct }}
+        shell: pwsh
+        run: |
+          if (-not "${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}" -and -not "${{ secrets.WINDOWS_CERTIFICATE_SHA1 }}") {
+            throw "WINDOWS_CERTIFICATE_BASE64 or WINDOWS_CERTIFICATE_SHA1 is required for signed Windows installers"
+          }
+          if ("${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}" -and -not "${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}") {
+            throw "WINDOWS_CERTIFICATE_PASSWORD is required when WINDOWS_CERTIFICATE_BASE64 is used"
+          }
+
       - name: Windows runtime smoke
         if: ${{ github.event_name != 'workflow_dispatch' || !inputs.build_direct }}
         run: pnpm run release:windows:smoke
 
       - name: Windows runtime smoke with direct installer build
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_direct }}
-        run: pnpm run release:windows:smoke -- --build-direct --bundles=${{ inputs.bundles }}
+        env:
+          WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          WINDOWS_CERTIFICATE_SHA1: ${{ secrets.WINDOWS_CERTIFICATE_SHA1 }}
+          WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
+        shell: pwsh
+        run: |
+          $smokeArgs = @("--build-direct", "--bundles=${{ inputs.bundles }}")
+          if ("${{ inputs.sign_direct }}" -eq "true") {
+            $smokeArgs += "--sign-direct"
+          }
+          if ("${{ inputs.install_smoke }}" -eq "true") {
+            $smokeArgs += "--install-smoke"
+          }
+          pnpm run release:windows:smoke -- @smokeArgs
 
       - uses: actions/upload-artifact@v4
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_direct }}

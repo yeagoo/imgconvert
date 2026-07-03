@@ -15,6 +15,8 @@ const options = {
   buildDirect: false,
   profile: "release",
   bundles: "msi,nsis",
+  signDirect: false,
+  installSmoke: false,
   skipConvertSmoke: false,
 };
 
@@ -29,6 +31,10 @@ for (const arg of process.argv.slice(2)) {
     options.profile = arg.slice("--profile=".length);
   } else if (arg.startsWith("--bundles=")) {
     options.bundles = arg.slice("--bundles=".length);
+  } else if (arg === "--sign-direct") {
+    options.signDirect = true;
+  } else if (arg === "--install-smoke") {
+    options.installSmoke = true;
   } else if (arg === "--skip-convert-smoke") {
     options.skipConvertSmoke = true;
   } else if (arg === "--help" || arg === "-h") {
@@ -46,6 +52,9 @@ if (!isWindows && !options.allowNonWindows) {
 }
 if (!["debug", "release"].includes(options.profile)) {
   fail(`unsupported profile: ${options.profile}`);
+}
+if ((options.signDirect || options.installSmoke) && !options.buildDirect) {
+  fail("--sign-direct and --install-smoke require --build-direct");
 }
 
 run("pnpm", ["run", "release:windows:direct:check"], "Windows direct guardrails");
@@ -82,6 +91,28 @@ if (options.buildDirect) {
     ],
     "Windows installer artifact check",
   );
+  if (options.signDirect) {
+    run(
+      "node",
+      [
+        "scripts/sign-windows-installers.mjs",
+        `--profile=${options.profile}`,
+        `--bundles=${options.bundles}`,
+      ],
+      "Windows installer signing",
+    );
+  }
+  if (options.installSmoke) {
+    run(
+      "node",
+      [
+        "scripts/smoke-windows-installers.mjs",
+        `--profile=${options.profile}`,
+        `--bundles=${options.bundles}`,
+      ],
+      "Windows installer install smoke",
+    );
+  }
 }
 
 console.log("Windows runtime smoke completed.");
@@ -109,10 +140,10 @@ function runPackageConversionSmoke() {
 
 function run(command, args, label, extraEnv = {}) {
   console.log(`\n> ${label}`);
-  const result = spawnSync(command, args, {
+  const resolved = resolveCommand(command, args);
+  const result = spawnSync(resolved.command, resolved.args, {
     cwd: repoRoot,
     env: { ...process.env, ...extraEnv },
-    shell: isWindows && ["pnpm", "node", "cargo"].includes(command),
     stdio: "inherit",
   });
   if (result.error) {
@@ -121,6 +152,30 @@ function run(command, args, label, extraEnv = {}) {
   if (result.status !== 0) {
     fail(`${label} failed with exit code ${result.status ?? 1}`);
   }
+}
+
+function resolveCommand(command, args) {
+  if (command === "node") {
+    return { command: process.execPath, args };
+  }
+  if (command === "pnpm" && process.env.npm_execpath) {
+    return { command: process.execPath, args: [process.env.npm_execpath, ...args] };
+  }
+  if (isWindows && command === "pnpm") {
+    return {
+      command: "cmd.exe",
+      args: ["/d", "/s", "/c", ["pnpm", ...args].map(cmdQuote).join(" ")],
+    };
+  }
+  return { command, args };
+}
+
+function cmdQuote(value) {
+  const raw = String(value);
+  if (/^[A-Za-z0-9_./:=,+-]+$/.test(raw)) {
+    return raw;
+  }
+  return `"${raw.replaceAll('"', '\\"')}"`;
 }
 
 function requireWindows(feature) {
@@ -143,6 +198,8 @@ Options:
   --build-direct          Build direct .msi/.exe installers with Tauri.
   --profile=<profile>     release or debug, defaults to release.
   --bundles=<list>        Comma-separated Tauri bundles, defaults to msi,nsis.
+  --sign-direct           Sign direct installers after --build-direct.
+  --install-smoke         Install built installers and run hidden app smoke.
   --skip-convert-smoke    Skip hidden package conversion smoke.
 `);
 }
