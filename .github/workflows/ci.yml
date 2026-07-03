@@ -2,8 +2,27 @@ name: CI
 
 on:
   push:
+    branches:
+      - main
+    paths-ignore:
+      - "docs/**"
+      - "*.md"
   pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "*.md"
   workflow_dispatch:
+    inputs:
+      platform_checks:
+        description: Run optional Windows CI checks.
+        required: true
+        default: false
+        type: boolean
+      package_smoke:
+        description: Run optional Linux package build/install smoke.
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -34,12 +53,8 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
-      - uses: dtolnay/rust-toolchain@1.96.0
       - run: pnpm install --frozen-lockfile
-      - run: cargo install cargo-about --version ${{ env.CARGO_ABOUT_VERSION }} --locked --features cli
       - run: pnpm run quality:frontend
-      - run: pnpm run license:npm
-      - run: pnpm run license:verify
       - run: pnpm run release:flatpak:verify
 
   rust-core:
@@ -91,6 +106,7 @@ jobs:
 
   tauri-backend-windows:
     name: Tauri Backend Windows HEIC
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.platform_checks }}
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -103,6 +119,7 @@ jobs:
 
   security:
     name: Security And Licenses
+    if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
@@ -128,6 +145,7 @@ jobs:
 
   e2e:
     name: Web Preview E2E
+    if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-24.04
     needs: frontend
     timeout-minutes: 25
@@ -148,6 +166,7 @@ jobs:
 
   tauri-build-smoke:
     name: Tauri Build Smoke (${{ matrix.arch }})
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.package_smoke }}
     runs-on: ${{ matrix.runner }}
     needs:
       - frontend
@@ -212,6 +231,6 @@ jobs:
         with:
           name: imgconvert-linux-${{ matrix.arch }}-debug
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 3
           path: |
             src-tauri/target/debug/bundle/deb/*.deb

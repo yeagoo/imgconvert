@@ -1,9 +1,6 @@
 name: Windows Smoke
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
     inputs:
       build_direct:
@@ -200,7 +197,7 @@ jobs:
         with:
           name: imgconvert-windows-x64-installers
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 3
           path: |
             ${{ env.CARGO_TARGET_DIR }}/release/bundle/msi/*.msi
             ${{ env.CARGO_TARGET_DIR }}/release/bundle/nsis/*.exe

@@ -1,9 +1,6 @@
 name: macOS Smoke
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
     inputs:
       heic_smoke:
@@ -215,7 +212,7 @@ jobs:
         with:
           name: imgconvert-macos-arm64-dmg
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 3
           path: src-tauri/target/release/bundle/dmg/*.dmg
 
       - name: Select MAS signing identity
@@ -254,7 +251,7 @@ jobs:
         with:
           name: imgconvert-macos-arm64-mas-app
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 3
           path: src-tauri/target/release/bundle/macos/*.app/**
 
       - uses: actions/upload-artifact@v4
@@ -262,5 +259,5 @@ jobs:
         with:
           name: imgconvert-macos-arm64-mas-pkg
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 3
           path: src-tauri/target/release/bundle/pkg/*.pkg

@@ -78,7 +78,7 @@ jobs:
         with:
           name: imgconvert-linux-${{ matrix.arch }}-release
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 14
           path: |
             src-tauri/target/release/bundle/deb/*.deb
             src-tauri/target/release/bundle/rpm/*.rpm

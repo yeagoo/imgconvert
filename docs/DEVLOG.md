@@ -5,6 +5,24 @@
 
 ---
 
+## 2026-07-03 — GitHub Actions 降本:重型平台 workflow 改手动触发
+
+Codex 发现当前 GitHub 仓库仍是 private,跨平台 GitHub-hosted runner 会消耗私有仓库 Actions 额度;历史 debug Linux artifacts 也接近/超过 Free private 的 storage 包含量。为避免日常 push 继续触发高成本平台构建,先收口仓库侧能控制的默认触发面:
+
+- **macOS/Windows smoke 改手动**:`.github/workflows/macos-smoke.yml` 与 `.github/workflows/windows-smoke.yml` 不再监听 `push main`,只保留 `workflow_dispatch`。macOS HEIC/ImageIO smoke、unsigned DMG、signed/notarized DMG、MAS candidate、Windows runtime smoke 和 unsigned `.msi`/NSIS artifact 都必须显式手动触发。
+- **日常 CI 瘦身**:`.github/workflows/ci.yml` 的 push 默认只跑 Linux 上的前端质量、Rust core 和 Tauri backend 基础检查;Windows HEIC 定向测试改为手动 `platform_checks=true`;Linux package build/install smoke 改为手动 `package_smoke=true`;Security/license 与 Web Preview E2E 只在 PR 或手动 CI 跑。
+- **减少无效触发**:CI push/pull_request 对 `docs/**` 与仓库根 Markdown 变更使用 `paths-ignore`,文档-only 修改不再触发完整 CI。
+- **artifact retention 下调**:debug/package/smoke artifact 保留期从 14/30 天下调到 3/14 天,减少 Actions storage 持续占用。
+- **云端 artifact 清理**:已删除历史 `imgconvert-linux-amd64-debug` / `imgconvert-linux-arm64-debug` artifacts,当前云端只保留最新 `imgconvert-macos-arm64-dmg` 小产物,artifact storage 从约 508 MiB 降到约 5.7 MiB。
+
+仍需账号/仓库设置层面处理:
+
+- 若继续全部开源,把 GitHub 仓库从 private 改成 public;public repo 使用标准 GitHub-hosted runners 的 Actions 分钟通常免费,这是最大降本项。
+- 在 GitHub Billing 里给 Actions 设置预算/告警,防止失败 workflow 或误触发继续烧钱。
+- 后续若要高频跑 Windows/macOS,优先接自托管 runner 或只在 release/tag 阶段手动触发。
+
+---
+
 ## 2026-07-03 — macOS 发布闭环:DMG/MAS 脚本、scoped persistence 与 GitHub-hosted smoke
 
 Codex 在 macOS 第一批能力之后补齐发布链路的 repo 侧闭环:
