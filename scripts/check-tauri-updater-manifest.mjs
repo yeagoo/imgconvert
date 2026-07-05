@@ -5,12 +5,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const packageJson = JSON.parse(readFileSync(path.join(repoRoot, "package.json"), "utf8"));
 
 const options = {
   profile: "release",
   bundleRoot: "",
   manifest: path.join(repoRoot, "target", "updater", "latest.json"),
-  baseUrl: process.env.TAURI_UPDATER_ARTIFACT_BASE_URL ?? "",
+  baseUrl: process.env.TAURI_UPDATER_ARTIFACT_BASE_URL ?? defaultArtifactBaseUrl(),
 };
 
 for (const arg of process.argv.slice(2)) {
@@ -267,6 +268,14 @@ function validateBaseUrl(raw) {
     fail(`artifact base URL must use HTTPS: ${raw}`);
   }
   return value;
+}
+
+function defaultArtifactBaseUrl() {
+  const repo = process.env.GITHUB_REPOSITORY?.trim() || "yeagoo/imgconvert";
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) {
+    fail(`GITHUB_REPOSITORY must be owner/name: ${repo}`);
+  }
+  return `https://github.com/${repo}/releases/download/v${packageJson.version}`;
 }
 
 function isSemver(version) {

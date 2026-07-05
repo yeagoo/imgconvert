@@ -69,6 +69,14 @@ function buildReport() {
       "Flatpak main manifest and optional HEIC extension static checks.",
     ),
     commandReadiness(
+      "release:flathub:metadata",
+      "Flathub AppStream metadata and optional local linter entrypoint.",
+    ),
+    commandReadiness(
+      "release:flathub:pr",
+      "Generate main package and HEIC extension PR workspaces for Flathub review.",
+    ),
+    commandReadiness(
       "test:image-quality",
       "Deterministic generated image quality/corruption suite.",
     ),
@@ -303,37 +311,53 @@ function windowsStorePrerequisite() {
 }
 
 function updaterPrerequisite() {
-  const envNames = [
-    "TAURI_UPDATER_PUBKEY",
-    "TAURI_SIGNING_PRIVATE_KEY",
-    "TAURI_SIGNING_PRIVATE_KEY_PASSWORD",
-    "TAURI_UPDATER_ENDPOINTS",
-    "TAURI_UPDATER_ARTIFACT_BASE_URL",
-  ];
+  const defaultKey = path.join(os.homedir(), ".tauri", "imgconvert-updater.key");
+  const defaultPubkey = `${defaultKey}.pub`;
+  const hasLocalKeyFiles = existsSync(defaultKey) && existsSync(defaultPubkey);
+  const hasSigningKey =
+    envIsSet("TAURI_SIGNING_PRIVATE_KEY") ||
+    envIsSet("TAURI_SIGNING_PRIVATE_KEY_PATH") ||
+    hasLocalKeyFiles;
+  const hasPubkey =
+    envIsSet("TAURI_UPDATER_PUBKEY") || envIsSet("TAURI_UPDATER_PUBKEY_PATH") || hasLocalKeyFiles;
   const ready =
-    envIsSet("TAURI_UPDATER_PUBKEY") &&
-    envIsSet("TAURI_SIGNING_PRIVATE_KEY") &&
-    envIsSet("TAURI_UPDATER_ENDPOINTS");
+    hasSigningKey &&
+    hasPubkey &&
+    (envIsSet("TAURI_UPDATER_ENDPOINTS") || packageScripts["release:updater:local"]);
   return {
     id: "tauri-updater-release",
     label: "Tauri updater release",
     status: ready ? "ready" : "external",
-    description: "Requires updater signing key material and a HTTPS release endpoint.",
-    command:
-      "pnpm run release:linux:updater && pnpm run release:updater:manifest && pnpm run release:updater:verify",
-    detail: envDetail(envNames),
+    description:
+      "Requires updater signing key material and a HTTPS release endpoint; local defaults support GitHub Releases.",
+    command: "pnpm run release:updater:local",
+    detail: [
+      `local default key files=${hasLocalKeyFiles ? "present" : "missing"}`,
+      envDetail([
+        "TAURI_UPDATER_PUBKEY",
+        "TAURI_UPDATER_PUBKEY_PATH",
+        "TAURI_SIGNING_PRIVATE_KEY",
+        "TAURI_SIGNING_PRIVATE_KEY_PATH",
+        "TAURI_SIGNING_PRIVATE_KEY_PASSWORD",
+        "TAURI_UPDATER_ENDPOINTS",
+        "TAURI_UPDATER_ARTIFACT_BASE_URL",
+      ]),
+    ].join("; "),
   };
 }
 
 function flathubHeicPrerequisite() {
+  const sampleConfigured = envIsSet("IMGCONVERT_FLATPAK_HEIC_SMOKE_INPUT");
   return {
     id: "flatpak-heic-addon-submission",
     label: "Flathub HEIC extension submission",
-    status: "external",
+    status: sampleConfigured ? "ready" : "external",
     description:
-      "Repo-side addon manifest is present; real Flathub addon review and HEIC sample smoke are external.",
-    command: "pnpm run release:flatpak:heic:download-check",
-    detail: "requires Flathub extension review and patent/channel acceptance",
+      "Repo-side addon manifest and PR workspace are present; real Flathub addon review remains external.",
+    command: "pnpm run release:flathub:heic-pr && pnpm run release:flatpak:heic:real-smoke",
+    detail: sampleConfigured
+      ? "IMGCONVERT_FLATPAK_HEIC_SMOKE_INPUT is set for real sandbox sample smoke"
+      : "requires Flathub extension review, patent/channel acceptance, and a real HEIC sample or heif-enc",
   };
 }
 
@@ -343,8 +367,9 @@ function flathubMainPrerequisite() {
     label: "Flathub main package submission",
     status: "external",
     description:
-      "Repo-side Flatpak manifest and runtime smoke are wired; real Flathub PR/review is external.",
-    command: "pnpm run release:flatpak:verify && pnpm run release:flatpak:smoke",
+      "Repo-side Flatpak manifest, metadata checks, runtime smoke, and PR workspace generation are wired; real Flathub PR/review is external.",
+    command:
+      "pnpm run release:flatpak:verify && pnpm run release:flatpak:smoke && pnpm run release:flathub:main-pr",
     detail: "requires Flathub account/review and release source URL publication",
   };
 }

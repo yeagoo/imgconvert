@@ -30,6 +30,32 @@ Do not commit either key.
 
 ## Local signed AppImage updater build
 
+If the key pair is stored at the default path, the local release command loads
+the private key only into child process environment variables and does not write
+it into the repository:
+
+```bash
+pnpm run release:updater:local
+```
+
+That command builds the updater-enabled AppImage, scrubs it, re-signs the final
+artifact, writes `target/updater/latest.json`, and verifies that the manifest
+matches the local artifact and `.sig`.
+
+The default updater endpoint is:
+
+```text
+https://github.com/yeagoo/imgconvert/releases/latest/download/latest.json
+```
+
+The default artifact base URL is:
+
+```text
+https://github.com/yeagoo/imgconvert/releases/download/v0.1.1
+```
+
+Override these when preparing a non-default repository or tag:
+
 ```bash
 export TAURI_UPDATER_PUBKEY="$(cat ~/.tauri/imgconvert-updater.key.pub)"
 export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/imgconvert-updater.key)"
@@ -38,7 +64,7 @@ export TAURI_UPDATER_ENDPOINTS='["https://github.com/yeagoo/imgconvert/releases/
 
 pnpm run release:linux:updater
 
-export TAURI_UPDATER_ARTIFACT_BASE_URL="https://github.com/yeagoo/imgconvert/releases/download/v0.1.0"
+export TAURI_UPDATER_ARTIFACT_BASE_URL="https://github.com/yeagoo/imgconvert/releases/download/v0.1.1"
 pnpm run release:updater:manifest
 pnpm run release:updater:verify
 ```
@@ -59,7 +85,7 @@ Upload these files to the GitHub Release:
 After the release is published, verify the public updater surface:
 
 ```bash
-pnpm run release:updater:smoke -- --repo=yeagoo/imgconvert --tag=v0.1.0 --platform=linux-x86_64
+pnpm run release:updater:smoke -- --repo=yeagoo/imgconvert --tag=v0.1.1 --platform=linux-x86_64
 ```
 
 On a different CPU architecture, add `--no-run` to validate `latest.json`,
@@ -70,7 +96,7 @@ AppImage.
 
 Run the manual workflow `Updater Release` with:
 
-- `tag`: the release tag, for example `v0.1.0`
+- `tag`: the release tag, for example `v0.1.1`
 - `publish_release=false`: build and upload workflow artifacts only
 - `publish_release=true`: upload `latest.json`, AppImage, signature, and
   checksums to the GitHub Release

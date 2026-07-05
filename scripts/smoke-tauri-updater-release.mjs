@@ -1,14 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-import {
-  chmodSync,
-  createWriteStream,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  statSync,
-} from "node:fs";
-import os from "node:os";
+import { chmodSync, createWriteStream, mkdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { pipeline } from "node:stream/promises";

@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const packageJson = JSON.parse(readFileSync(path.join(repoRoot, "package.json"), "utf8"));
 const defaultOutput = path.join(
   repoRoot,
   "src-tauri",
@@ -100,7 +101,7 @@ function validateEndpoint(endpoint) {
   const normalized = endpoint
     .replaceAll("{{target}}", "linux")
     .replaceAll("{{arch}}", "x86_64")
-    .replaceAll("{{current_version}}", "0.1.0");
+    .replaceAll("{{current_version}}", packageJson.version);
   let url;
   try {
     url = new URL(normalized);

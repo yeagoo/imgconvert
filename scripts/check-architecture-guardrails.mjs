@@ -18,7 +18,7 @@ const externalCodecs = readText("src-tauri/src/external_codecs.rs");
 const tauriBuild = readText("src-tauri/build.rs");
 const macosSystemCodecs = readText("src-tauri/src/macos_system_codecs.rs");
 const windowsSystemCodecs = readText("src-tauri/src/windows_system_codecs.rs");
-const flatpakManifest = readText("packaging/flatpak/com.ivmm.imgconvert.yml");
+const flatpakManifest = readText("packaging/flatpak/io.github.yeagoo.imgconvert.yml");
 
 checkPackageManager();
 checkLicensingAndDependencies();

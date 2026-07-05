@@ -48,6 +48,7 @@ checkProbeMetadataGuardrails();
 checkFuzzCorpusGuardrails();
 checkTauriUpdaterGuardrails();
 checkFlatpakHeicExtensionGuardrails();
+checkFlathubReleaseGuardrails();
 
 if (options.platforms.includes("macos")) {
   checkMacos();
@@ -482,6 +483,7 @@ function checkTauriUpdaterGuardrails() {
   );
   const verifyScript = readText(path.join(repoRoot, "scripts", "check-tauri-updater-manifest.mjs"));
   const signScript = readText(path.join(repoRoot, "scripts", "sign-tauri-updater-artifacts.mjs"));
+  const linuxUpdaterScript = readText(path.join(repoRoot, "scripts", "release-linux-updater.mjs"));
   const smokeScript = readText(path.join(repoRoot, "scripts", "smoke-tauri-updater-release.mjs"));
   const updaterDocs = readText(path.join(repoRoot, "docs", "UPDATER.md"));
 
@@ -502,8 +504,11 @@ function checkTauriUpdaterGuardrails() {
   if (!packageScripts["release:updater:smoke"]?.includes("smoke-tauri-updater-release.mjs")) {
     failures.push("package.json must expose release:updater:smoke");
   }
-  if (!packageScripts["release:linux:updater"]?.includes("release:updater:sign")) {
-    failures.push("package.json must expose release:linux:updater with final artifact signing");
+  if (!packageScripts["release:linux:updater"]?.includes("release-linux-updater.mjs")) {
+    failures.push("package.json must expose release:linux:updater via release-linux-updater.mjs");
+  }
+  if (!packageScripts["release:updater:local"]?.includes("release:updater:manifest")) {
+    failures.push("package.json must expose release:updater:local with latest.json generation");
   }
   if (!packageDependencies["@tauri-apps/plugin-updater"]) {
     failures.push("package.json must include @tauri-apps/plugin-updater for UI checks");
@@ -573,6 +578,18 @@ function checkTauriUpdaterGuardrails() {
     }
   }
   for (const expected of [
+    "TAURI_SIGNING_PRIVATE_KEY_PATH",
+    "release:updater:prepare",
+    "tauri",
+    "build",
+    "release:updater:sign",
+    "generate-linux-release-checksums.mjs",
+  ]) {
+    if (!linuxUpdaterScript.includes(expected)) {
+      failures.push(`release-linux-updater missing marker: ${expected}`);
+    }
+  }
+  for (const expected of [
     "latest.json",
     ".sig",
     "IMGCONVERT_PACKAGE_CONVERT_SMOKE",
@@ -625,7 +642,7 @@ function checkTauriUpdaterGuardrails() {
 function checkFlatpakHeicExtensionGuardrails() {
   const packageScripts = packageJson.scripts ?? {};
   const extensionDir = path.join(repoRoot, "packaging", "flatpak", "extensions", "heic");
-  const manifest = readText(path.join(extensionDir, "com.ivmm.imgconvert.Codecs.Heic.yml"));
+  const manifest = readText(path.join(extensionDir, "io.github.yeagoo.imgconvert.Codecs.Heic.yml"));
   const codecManifest = readText(path.join(extensionDir, "imgconvert-codec-heic.json"));
   const helper = readText(path.join(extensionDir, "imgconvert-heic-helper.sh"));
   const checkScript = readText(path.join(repoRoot, "scripts", "check-flatpak-heic-extension.mjs"));
@@ -654,9 +671,15 @@ function checkFlatpakHeicExtensionGuardrails() {
     "libde265-1.1.1.tar.gz",
     "libheif-1.23.1.tar.gz",
     "- -DWITH_LIBDE265=ON",
+    "- -DLIBDE265_INCLUDE_DIR=/app/extensions/codecs/Heic/include",
+    "- -DLIBDE265_LIBRARY=/app/extensions/codecs/Heic/lib/libde265.so",
+    "prepend-ld-library-path: /app/extensions/codecs/Heic/lib",
+    "- /bin/dec265",
+    "- /bin/heif-enc",
     "- -DWITH_X265=OFF",
     "- -DENABLE_ENCODER=OFF",
-    "share/licenses/com.ivmm.imgconvert.Codecs.Heic",
+    "heif-dec --list-decoders | grep -i libde265",
+    "share/licenses/io.github.yeagoo.imgconvert.Codecs.Heic",
   ]) {
     if (!manifest.includes(expected)) {
       failures.push(`Flatpak HEIC extension manifest missing marker: ${expected}`);
@@ -671,7 +694,12 @@ function checkFlatpakHeicExtensionGuardrails() {
       failures.push(`Flatpak HEIC codec manifest missing marker: ${expected}`);
     }
   }
-  for (const expected of ["set -eu", 'heif-convert "$input" "$output"', '{"version":1}']) {
+  for (const expected of [
+    "set -eu",
+    'helper_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)',
+    '"$helper_dir/heif-dec" --quiet "$input" "$output"',
+    '{"version":1}',
+  ]) {
     if (!helper.includes(expected)) {
       failures.push(`Flatpak HEIC helper wrapper missing marker: ${expected}`);
     }
@@ -689,6 +717,126 @@ function checkFlatpakHeicExtensionGuardrails() {
   for (const expected of ["flatpak-builder", "--download-only", "--allow-missing-runtimes"]) {
     if (!smokeScript.includes(expected)) {
       failures.push(`smoke-flatpak-heic-extension missing marker: ${expected}`);
+    }
+  }
+}
+
+function checkFlathubReleaseGuardrails() {
+  const packageScripts = packageJson.scripts ?? {};
+  const mainMetainfo = readText(
+    path.join(repoRoot, "packaging", "flatpak", "io.github.yeagoo.imgconvert.metainfo.xml"),
+  );
+  const heicMetainfo = readText(
+    path.join(
+      repoRoot,
+      "packaging",
+      "flatpak",
+      "extensions",
+      "heic",
+      "io.github.yeagoo.imgconvert.Codecs.Heic.metainfo.xml",
+    ),
+  );
+  const flatpakReadme = readText(path.join(repoRoot, "packaging", "flatpak", "README.md"));
+  const metadataScript = readText(path.join(repoRoot, "scripts", "check-flathub-metadata.mjs"));
+  const prScript = readText(path.join(repoRoot, "scripts", "prepare-flathub-pr.mjs"));
+  const realSmokeScript = readText(
+    path.join(repoRoot, "scripts", "smoke-flatpak-heic-runtime.mjs"),
+  );
+  const runtimeSmokeScript = readText(path.join(repoRoot, "scripts", "smoke-flatpak-runtime.mjs"));
+
+  for (const [scriptName, marker] of [
+    ["release:flathub:metadata", "check-flathub-metadata.mjs"],
+    ["release:flathub:metadata:lint", "check-flathub-metadata.mjs --flathub-lint"],
+    ["release:flathub:pr", "prepare-flathub-pr.mjs --kind=all"],
+    ["release:flathub:main-pr", "prepare-flathub-pr.mjs --kind=main"],
+    ["release:flathub:heic-pr", "prepare-flathub-pr.mjs --kind=heic"],
+    ["release:flatpak:heic:real-smoke", "smoke-flatpak-heic-runtime.mjs"],
+  ]) {
+    if (!packageScripts[scriptName]?.includes(marker)) {
+      failures.push(`package.json must expose ${scriptName}`);
+    }
+  }
+  if (!packageScripts["release:flatpak:verify"]?.includes("check-flathub-metadata.mjs")) {
+    failures.push("release:flatpak:verify must include Flathub metadata validation");
+  }
+
+  for (const expected of [
+    '<developer id="io.github.yeagoo">',
+    '<url type="homepage">https://github.com/yeagoo/imgconvert</url>',
+    '<url type="vcs-browser">https://github.com/yeagoo/imgconvert</url>',
+    '<url type="bugtracker">https://github.com/yeagoo/imgconvert/issues</url>',
+    "<screenshots>",
+    '<screenshot type="default">',
+    "<caption>Batch image conversion queue and output settings</caption>",
+  ]) {
+    if (!mainMetainfo.includes(expected)) {
+      failures.push(`main Flatpak MetaInfo missing marker: ${expected}`);
+    }
+  }
+  if (mainMetainfo.includes("<developer_name>")) {
+    failures.push("main Flatpak MetaInfo must not use deprecated developer_name");
+  }
+  for (const expected of [
+    '<developer id="io.github.yeagoo">',
+    '<url type="homepage">https://github.com/yeagoo/imgconvert</url>',
+    '<url type="vcs-browser">https://github.com/yeagoo/imgconvert</url>',
+    "<project_license>LGPL-3.0-or-later</project_license>",
+  ]) {
+    if (!heicMetainfo.includes(expected)) {
+      failures.push(`HEIC extension MetaInfo missing marker: ${expected}`);
+    }
+  }
+  for (const expected of [
+    "appstreamcli validate",
+    "flatpak-builder-lint",
+    "developer_name",
+    "screenshots",
+    "localScreenshotPath",
+    "vcs-browser",
+  ]) {
+    if (!metadataScript.includes(expected)) {
+      failures.push(`check-flathub-metadata missing marker: ${expected}`);
+    }
+  }
+  for (const expected of [
+    "FLATHUB_SOURCE_URL",
+    "FLATHUB_RELEASE_REF",
+    "io.github.yeagoo.imgconvert.yml",
+    "io.github.yeagoo.imgconvert.Codecs.Heic.yml",
+    "raw.githubusercontent.com",
+    "sha256File",
+  ]) {
+    if (!prScript.includes(expected)) {
+      failures.push(`prepare-flathub-pr missing marker: ${expected}`);
+    }
+  }
+  for (const expected of [
+    "IMGCONVERT_FLATPAK_HEIC_SMOKE_INPUT",
+    "cleanupSmokeInstalls",
+    "cleanupSmokeRemotes",
+    "--show-origin",
+    "heif-enc",
+    '"install"',
+    "IMGCONVERT_PATH_CONVERT_SMOKE",
+    "IMGCONVERT_DISABLE_EXTERNAL_CODECS=1",
+    "IMGCONVERT_ALLOW_FLATPAK_CODEC_EXTENSIONS=1",
+  ]) {
+    if (!realSmokeScript.includes(expected)) {
+      failures.push(`smoke-flatpak-heic-runtime missing marker: ${expected}`);
+    }
+  }
+  if (!runtimeSmokeScript.includes("--repo=")) {
+    failures.push("smoke-flatpak-runtime must support --repo for main+extension local smoke");
+  }
+  for (const expected of [
+    "release:flathub:main-pr",
+    "release:flathub:heic-pr",
+    "release:flathub:metadata",
+    "release:flatpak:heic:real-smoke",
+    "flatpak-builder-lint",
+  ]) {
+    if (!flatpakReadme.includes(expected)) {
+      failures.push(`Flatpak README must document ${expected}`);
     }
   }
 }
