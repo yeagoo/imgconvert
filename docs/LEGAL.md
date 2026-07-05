@@ -11,7 +11,7 @@
 - **宽松许可**:允许商用、闭源衍生、上架各应用商店;保留版权与许可声明即可。
 - **专利授权条款**:相比 MIT 多了显式专利授权(对图像编解码这类领域更稳),含专利报复终止条款。
 - **NOTICE 要求**:分发时须保留本仓库 `NOTICE` 及所依赖 Apache-2.0 组件的 NOTICE 内容。
-- **SPDX 标识默认统一为 `Apache-2.0`**(`Cargo.toml`/`package.json` license 字段与各源文件头一致)。例外:`packaging/flatpak/com.ivmm.imgconvert.metainfo.xml` 的 AppStream 元数据按 Flatpak 工具链要求使用 `metadata_license=CC0-1.0`;项目/应用许可证仍是 `Apache-2.0`。
+- **SPDX 标识默认统一为 `Apache-2.0`**(`Cargo.toml`/`package.json` license 字段与各源文件头一致)。例外:`packaging/flatpak/io.github.yeagoo.imgconvert.metainfo.xml` 的 AppStream 元数据按 Flatpak 工具链要求使用 `metadata_license=CC0-1.0`;项目/应用许可证仍是 `Apache-2.0`。
 - **贡献**:inbound = outbound(同 Apache-2.0)+ DCO,不要求 CLA,见 [../CONTRIBUTING.md](../CONTRIBUTING.md)。Apache-2.0 §5 已含贡献条款。
 
 ## 上架可行性
@@ -61,7 +61,7 @@
 
 - 插件仓库/包名建议:`imgconvert-heic-plugin`。许可证可用 `LGPL-3.0-or-later` 或与所用 libheif/libde265 组合兼容的 LGPL 版本。
 - 分发形态:独立 installer/压缩包/系统包;主程序只发现 manifest 与调用 helper。不能把 helper 当作主程序内置依赖,不能让 `cargo deny` 主依赖树出现 LGPL/GPL。
-- 商店形态:App Store/MS Store/Flathub 构建默认禁用宿主外部 helper;当前 Flatpak manifest 已设置 `IMGCONVERT_DISABLE_EXTERNAL_CODECS=1` 且不捆绑 HEIC/helper。Flatpak 例外是单独 addon:`com.ivmm.imgconvert.Codecs.Heic` 作为独立 LGPL extension,安装在 `/app/extensions/codecs`,主包只读取该 extension manifest,不链接 LGPL 库。
+- 商店形态:App Store/MS Store/Flathub 构建默认禁用宿主外部 helper;当前 Flatpak manifest 已设置 `IMGCONVERT_DISABLE_EXTERNAL_CODECS=1` 且不捆绑 HEIC/helper。Flatpak 例外是单独 addon:`io.github.yeagoo.imgconvert.Codecs.Heic` 作为独立 LGPL extension,安装在 `/app/extensions/codecs`,主包只读取该 extension manifest,不链接 LGPL 库。
 - 功能范围:只声明 `readable: ["heic","heif","hif"]`;`writable` 为空。HEIC 编码输出暂缓,避免 x265/GPL 与 HEVC 编码专利风险。
 - LGPL 义务:插件必须提供许可证全文、NOTICE/版权、对应源码或源码获取方式,并允许用户替换 LGPL 组件。若修改 libheif/libde265,需提供修改源码。
 - Flatpak HEIC extension 当前 repo 侧 manifest 固定 `libde265`/`libheif` 源码 tarball 与 sha256,关闭 HEIC encoding、`x265` 和 GPL-only codec 路径;真正提交 Flathub addon 前仍需复核上游许可证文本、源码可得性、专利/地区分发风险和 AppStream 文案。

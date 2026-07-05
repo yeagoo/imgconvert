@@ -9,6 +9,7 @@ export default [
   {
     ignores: [
       ".svelte-kit/**",
+      "**/.flatpak-builder/**",
       "dist/**",
       "node_modules/**",
       "fuzz/target/**",

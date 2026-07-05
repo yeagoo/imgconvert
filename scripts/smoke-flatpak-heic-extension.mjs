@@ -12,15 +12,17 @@ const manifest = path.join(
   "flatpak",
   "extensions",
   "heic",
-  "com.ivmm.imgconvert.Codecs.Heic.yml",
+  "io.github.yeagoo.imgconvert.Codecs.Heic.yml",
 );
 const buildDir = path.join(repoRoot, "target", "flatpak", "heic-extension-build");
 const downloadDir = path.join(repoRoot, "target", "flatpak", "heic-extension-download");
+const flathubUrl = "https://flathub.org/repo/flathub.flatpakrepo";
 
 const options = {
   checkOnly: false,
   downloadOnly: false,
   install: false,
+  installDepsFrom: "flathub",
   repo: "",
 };
 
@@ -33,6 +35,8 @@ for (const arg of process.argv.slice(2)) {
     options.downloadOnly = true;
   } else if (arg === "--install") {
     options.install = true;
+  } else if (arg.startsWith("--install-deps-from=")) {
+    options.installDepsFrom = arg.slice("--install-deps-from=".length).trim();
   } else if (arg.startsWith("--repo=")) {
     options.repo = path.resolve(repoRoot, arg.slice("--repo=".length));
   } else {
@@ -54,24 +58,30 @@ if (options.downloadOnly && options.install) {
 if (!commandExists("flatpak-builder")) {
   fail("flatpak-builder is required for HEIC extension build smoke");
 }
+if (!options.downloadOnly && options.installDepsFrom === "flathub") {
+  ensureFlathubRemote();
+}
 
 const activeBuildDir = options.downloadOnly ? downloadDir : buildDir;
 mkdirSync(activeBuildDir, { recursive: true });
-const args = ["--force-clean"];
+const args = ["--user", "--force-clean"];
 if (options.downloadOnly) {
   console.log(
     "Flatpak HEIC extension download-only smoke allows the main app runtime to be missing.",
   );
   args.push("--download-only", "--allow-missing-runtimes");
 } else {
-  args.push("--install-deps-from=flathub");
+  if (!options.installDepsFrom) {
+    fail("--install-deps-from must not be empty");
+  }
+  args.push(`--install-deps-from=${options.installDepsFrom}`);
 }
 if (options.repo) {
   mkdirSync(options.repo, { recursive: true });
   args.push(`--repo=${options.repo}`);
 }
 if (options.install) {
-  args.push("--user", "--install");
+  args.push("--install");
 }
 args.push(activeBuildDir, manifest);
 
@@ -90,6 +100,18 @@ function commandExists(command) {
     stdio: "ignore",
   });
   return result.status === 0;
+}
+
+function ensureFlathubRemote() {
+  const remotes = spawnSync("flatpak", ["remotes", "--user", "--columns=name"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (remotes.status === 0 && remotes.stdout.split(/\r?\n/).includes("flathub")) {
+    return;
+  }
+  run("flatpak", ["remote-add", "--user", "--if-not-exists", "flathub", flathubUrl]);
 }
 
 function run(command, args, extra = {}) {

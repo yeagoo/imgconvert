@@ -5,6 +5,6 @@ Type=Application
 Name=ImgConvert
 Comment=Batch image conversion tool
 Exec=imgconvert
-Icon=com.ivmm.imgconvert
+Icon=io.github.yeagoo.imgconvert
 Terminal=false
 Categories=Graphics;Photography;

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-app-id: com.ivmm.imgconvert
+app-id: io.github.yeagoo.imgconvert
 runtime: org.gnome.Platform
 runtime-version: "50"
 sdk: org.gnome.Sdk
@@ -13,6 +13,7 @@ build-options:
   append-path: /run/build/imgconvert/.flatpak-corepack-bin:/usr/lib/sdk/node20/bin:/usr/lib/sdk/rust-stable/bin
   env:
     CARGO_NET_OFFLINE: "true"
+    CI: "true"
     COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
     COREPACK_HOME: /run/build/imgconvert/.flatpak-corepack
     IMGCONVERT_ALLOW_FLATPAK_CODEC_EXTENSIONS: "1"
@@ -28,9 +29,10 @@ finish-args:
   - --env=IMGCONVERT_DISABLE_EXTERNAL_CODECS=1
 
 add-extensions:
-  com.ivmm.imgconvert.Codecs:
+  io.github.yeagoo.imgconvert.Codecs:
     version: "1"
     directory: extensions/codecs
+    add-ld-path: lib
     subdirectories: true
     no-autodownload: true
     autodelete: true
@@ -54,14 +56,14 @@ modules:
       - pnpm run build
       - cargo build --release --locked --offline --manifest-path src-tauri/Cargo.toml
       - install -Dm755 src-tauri/target/release/imgconvert /app/bin/imgconvert
-      - install -Dm644 packaging/flatpak/com.ivmm.imgconvert.desktop /app/share/applications/com.ivmm.imgconvert.desktop
-      - install -Dm644 packaging/flatpak/com.ivmm.imgconvert.metainfo.xml /app/share/metainfo/com.ivmm.imgconvert.metainfo.xml
-      - install -Dm644 src-tauri/icons/32x32.png /app/share/icons/hicolor/32x32/apps/com.ivmm.imgconvert.png
-      - install -Dm644 src-tauri/icons/128x128.png /app/share/icons/hicolor/128x128/apps/com.ivmm.imgconvert.png
+      - install -Dm644 packaging/flatpak/io.github.yeagoo.imgconvert.desktop /app/share/applications/io.github.yeagoo.imgconvert.desktop
+      - install -Dm644 packaging/flatpak/io.github.yeagoo.imgconvert.metainfo.xml /app/share/metainfo/io.github.yeagoo.imgconvert.metainfo.xml
+      - install -Dm644 src-tauri/icons/32x32.png /app/share/icons/hicolor/32x32/apps/io.github.yeagoo.imgconvert.png
+      - install -Dm644 src-tauri/icons/128x128.png /app/share/icons/hicolor/128x128/apps/io.github.yeagoo.imgconvert.png
       - install -Dm644 LICENSE /app/share/licenses/imgconvert/LICENSE
       - install -Dm644 NOTICE /app/share/doc/imgconvert/NOTICE
       - install -Dm644 THIRD_PARTY_LICENSES.md /app/share/doc/imgconvert/THIRD_PARTY_LICENSES.md
     sources:
       - type: archive
-        path: ../../target/flatpak/sources/imgconvert-0.1.0-source.tar.gz
-        sha256: 65354d0baed7bbe2734e55080ab0626cad240fd3cccc1ce8658d6c2ba830ecb6
+        path: ../../target/flatpak/sources/imgconvert-0.1.1-source.tar.gz
+        sha256: ead8f136896ee81b452d4b3ed4391da5453ca93b3f3499c7ec4a495d0cba8f5b

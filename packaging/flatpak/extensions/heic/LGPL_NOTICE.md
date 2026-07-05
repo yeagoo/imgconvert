@@ -11,7 +11,7 @@ The extension builds and distributes LGPL codec components:
 - `libde265` from `strukturag/libde265`
 
 The Flatpak manifest installs each upstream `COPYING` file into the extension
-under `share/licenses/com.ivmm.imgconvert.Codecs.Heic/`.
+under `share/licenses/io.github.yeagoo.imgconvert.Codecs.Heic/`.
 
 The extension is decode-only. It intentionally disables HEIC encoding, `x265`,
 and GPL-only codec paths.

@@ -7,18 +7,19 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const manifestPath = path.join(repoRoot, "packaging", "flatpak", "com.ivmm.imgconvert.yml");
+const manifestPath = path.join(repoRoot, "packaging", "flatpak", "io.github.yeagoo.imgconvert.yml");
 const buildRoot = path.join(repoRoot, "target", "flatpak");
 const buildDir = path.join(buildRoot, "build-dir");
 const stateDir = path.join(buildRoot, "builder-state");
 const smokeDir = path.join(os.tmpdir(), `imgconvert-flatpak-smoke-${process.pid}`);
-const appId = "com.ivmm.imgconvert";
+const appId = "io.github.yeagoo.imgconvert";
 const flathubUrl = "https://flathub.org/repo/flathub.flatpakrepo";
 
 const options = {
   prepare: false,
   skipFetch: false,
   noInstall: false,
+  repo: "",
 };
 
 for (const arg of process.argv.slice(2)) {
@@ -28,6 +29,8 @@ for (const arg of process.argv.slice(2)) {
     options.skipFetch = true;
   } else if (arg === "--no-install") {
     options.noInstall = true;
+  } else if (arg.startsWith("--repo=")) {
+    options.repo = path.resolve(repoRoot, arg.slice("--repo=".length));
   } else {
     fail(`unknown argument: ${arg}`);
   }
@@ -90,9 +93,14 @@ function buildFlatpak() {
     "--state-dir",
     stateDir,
     "--force-clean",
+    "--default-branch=stable",
   ];
   if (!options.noInstall) {
     args.push("--install");
+  }
+  if (options.repo) {
+    mkdirSync(options.repo, { recursive: true });
+    args.push(`--repo=${options.repo}`);
   }
   args.push(buildDir, manifestPath);
   run("flatpak-builder", args);

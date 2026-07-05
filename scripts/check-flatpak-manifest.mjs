@@ -6,9 +6,9 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const flatpakDir = path.join(repoRoot, "packaging", "flatpak");
-const manifestPath = path.join(flatpakDir, "com.ivmm.imgconvert.yml");
-const desktopPath = path.join(flatpakDir, "com.ivmm.imgconvert.desktop");
-const metainfoPath = path.join(flatpakDir, "com.ivmm.imgconvert.metainfo.xml");
+const manifestPath = path.join(flatpakDir, "io.github.yeagoo.imgconvert.yml");
+const desktopPath = path.join(flatpakDir, "io.github.yeagoo.imgconvert.desktop");
+const metainfoPath = path.join(flatpakDir, "io.github.yeagoo.imgconvert.metainfo.xml");
 const prepareScriptPath = path.join(repoRoot, "scripts", "prepare-flatpak-release.mjs");
 const heicExtensionDir = path.join(flatpakDir, "extensions", "heic");
 
@@ -40,7 +40,11 @@ if (failures.length > 0) {
 console.log("Flatpak manifest check passed.");
 
 function inspectManifest(text) {
-  requireText(text, "app-id: com.ivmm.imgconvert", "manifest app-id must match Tauri identifier");
+  requireText(
+    text,
+    "app-id: io.github.yeagoo.imgconvert",
+    "manifest app-id must use the Flathub GitHub namespace",
+  );
   requireText(text, "runtime: org.gnome.Platform", "manifest must use GNOME runtime");
   requireText(text, 'runtime-version: "50"', "manifest must track supported GNOME runtime 50");
   requireText(text, "sdk: org.gnome.Sdk", "manifest must use GNOME SDK");
@@ -56,9 +60,10 @@ function inspectManifest(text) {
   );
   for (const expected of [
     "add-extensions:",
-    "com.ivmm.imgconvert.Codecs:",
+    "io.github.yeagoo.imgconvert.Codecs:",
     'version: "1"',
     "directory: extensions/codecs",
+    "add-ld-path: lib",
     "subdirectories: true",
     "no-autodownload: true",
     "mkdir -p ${FLATPAK_DEST}/extensions/codecs",
@@ -77,6 +82,7 @@ function inspectManifest(text) {
     "org.freedesktop.Sdk.Extension.node20",
     "org.freedesktop.Sdk.Extension.rust-stable",
     "CARGO_NET_OFFLINE",
+    'CI: "true"',
     "COREPACK_HOME",
     ".flatpak-corepack-bin:/usr/lib/sdk/node20/bin",
     "corepack enable --install-directory .flatpak-corepack-bin",
@@ -125,7 +131,7 @@ function inspectReadme() {
     "corepack.tgz",
     "IMGCONVERT_PACKAGE_CONVERT_SMOKE=1",
     "IMGCONVERT_ALLOW_FLATPAK_CODEC_EXTENSIONS=1",
-    "com.ivmm.imgconvert.Codecs.Heic",
+    "io.github.yeagoo.imgconvert.Codecs.Heic",
   ]) {
     requireText(readme, expected, `Flatpak README must document ${expected}`);
   }
@@ -134,12 +140,12 @@ function inspectReadme() {
 function inspectHeicExtensionTemplate() {
   const manifestTemplatePath = path.join(
     heicExtensionDir,
-    "com.ivmm.imgconvert.Codecs.Heic.template.yml",
+    "io.github.yeagoo.imgconvert.Codecs.Heic.template.yml",
   );
   const codecManifestPath = path.join(heicExtensionDir, "imgconvert-codec-heic.template.json");
   const metainfoTemplatePath = path.join(
     heicExtensionDir,
-    "com.ivmm.imgconvert.Codecs.Heic.metainfo.template.xml",
+    "io.github.yeagoo.imgconvert.Codecs.Heic.metainfo.template.xml",
   );
   const readmePath = path.join(heicExtensionDir, "README.md");
   for (const file of [manifestTemplatePath, codecManifestPath, metainfoTemplatePath, readmePath]) {
@@ -153,11 +159,11 @@ function inspectHeicExtensionTemplate() {
 
   const manifestTemplate = readFileSync(manifestTemplatePath, "utf8");
   for (const expected of [
-    "id: com.ivmm.imgconvert.Codecs.Heic",
+    "id: io.github.yeagoo.imgconvert.Codecs.Heic",
     'branch: "1"',
-    "runtime: com.ivmm.imgconvert",
+    "runtime: io.github.yeagoo.imgconvert",
     "build-extension: true",
-    "prefix: /app/extensions/codecs/heic",
+    "prefix: /app/extensions/codecs/Heic",
     "imgconvert-codec-heic.json",
   ]) {
     requireText(manifestTemplate, expected, `HEIC extension template missing ${expected}`);
@@ -207,7 +213,7 @@ function inspectDesktop(text) {
   if (fields.Exec !== "imgconvert") {
     failures.push("desktop Exec must be imgconvert");
   }
-  if (fields.Icon !== "com.ivmm.imgconvert") {
+  if (fields.Icon !== "io.github.yeagoo.imgconvert") {
     failures.push("desktop Icon must use Flatpak app-id");
   }
   if (!fields.Categories?.includes("Graphics") || !fields.Categories?.includes("Photography")) {
@@ -217,12 +223,18 @@ function inspectDesktop(text) {
 
 function inspectMetainfo(text) {
   for (const expected of [
-    "<id>com.ivmm.imgconvert</id>",
+    "<id>io.github.yeagoo.imgconvert</id>",
     "<metadata_license>CC0-1.0</metadata_license>",
     "<project_license>Apache-2.0</project_license>",
-    '<launchable type="desktop-id">com.ivmm.imgconvert.desktop</launchable>',
+    '<developer id="io.github.yeagoo">',
+    '<url type="vcs-browser">https://github.com/yeagoo/imgconvert</url>',
+    '<launchable type="desktop-id">io.github.yeagoo.imgconvert.desktop</launchable>',
+    "<screenshots>",
   ]) {
     requireText(text, expected, `metainfo missing ${expected}`);
+  }
+  if (text.includes("<developer_name>")) {
+    failures.push("metainfo must not use deprecated developer_name");
   }
   for (const forbidden of ["HEIC helper plugins are bundled", "libheif", "x265"]) {
     if (text.includes(forbidden)) {

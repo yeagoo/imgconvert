@@ -20,7 +20,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const packageJson = JSON.parse(readFileSync(path.join(repoRoot, "package.json"), "utf8"));
 const packageManager = packageJson.packageManager;
 const flatpakDir = path.join(repoRoot, "packaging", "flatpak");
-const manifestPath = path.join(flatpakDir, "com.ivmm.imgconvert.yml");
+const manifestPath = path.join(flatpakDir, "io.github.yeagoo.imgconvert.yml");
 const workRoot = path.join(repoRoot, "target", "flatpak");
 const stagingRoot = mkdtempSync(path.join(os.tmpdir(), "imgconvert-flatpak-"));
 const stagingDir = path.join(stagingRoot, `imgconvert-${packageJson.version}`);
@@ -87,7 +87,7 @@ function copySourceTree() {
     "--exclude=src-tauri/target",
     "--exclude=test-results",
     "--exclude=playwright-report",
-    "--exclude=packaging/flatpak/com.ivmm.imgconvert.yml",
+    "--exclude=packaging/flatpak/io.github.yeagoo.imgconvert.yml",
   ];
   run("rsync", ["-a", "--delete", ...excludes, `${repoRoot}/`, `${stagingDir}/`]);
 }

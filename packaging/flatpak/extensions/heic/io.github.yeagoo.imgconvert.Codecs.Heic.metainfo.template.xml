@@ -1,12 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- SPDX-License-Identifier: CC0-1.0 -->
 <component type="addon">
-  <id>com.ivmm.imgconvert.Codecs.Heic</id>
-  <extends>com.ivmm.imgconvert</extends>
+  <id>io.github.yeagoo.imgconvert.Codecs.Heic</id>
+  <extends>io.github.yeagoo.imgconvert</extends>
   <name>ImgConvert HEIC Import Extension</name>
   <summary>Optional decode-only HEIC/HEIF import helper for ImgConvert</summary>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>LGPL-3.0-or-later</project_license>
+  <developer id="io.github.yeagoo">
+    <name>ImgConvert contributors</name>
+  </developer>
+  <url type="homepage">https://github.com/yeagoo/imgconvert</url>
+  <url type="vcs-browser">https://github.com/yeagoo/imgconvert</url>
   <description>
     <p>
       Adds optional HEIC/HEIF import through a process-isolated helper. The main

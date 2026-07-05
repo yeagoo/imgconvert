@@ -20,7 +20,8 @@ case "$output" in
     ;;
 esac
 
-heif-convert "$input" "$output" >/dev/null
+helper_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+"$helper_dir/heif-dec" --quiet "$input" "$output"
 
 if [ -n "$metadata" ]; then
   printf '{"version":1}\n' > "$metadata"
