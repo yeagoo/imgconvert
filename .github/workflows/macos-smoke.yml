@@ -48,7 +48,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Verify macOS runner architecture
         run: |
@@ -62,12 +62,12 @@ jobs:
       - name: Install native codec build tools
         run: brew install cmake meson ninja nasm
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 10.34.4
           run_install: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
@@ -222,7 +222,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: pnpm run release:macos:notarize
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: ${{ github.event_name == 'workflow_dispatch' && (inputs.build_direct || inputs.notarize_direct) }}
         with:
           name: imgconvert-macos-arm64-dmg
@@ -261,7 +261,7 @@ jobs:
           fi
           pnpm run release:macos:mas:pkg
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_mas_candidate }}
         with:
           name: imgconvert-macos-arm64-mas-app
@@ -269,7 +269,7 @@ jobs:
           retention-days: 3
           path: src-tauri/target/release/bundle/macos/*.app/**
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_mas_candidate }}
         with:
           name: imgconvert-macos-arm64-mas-pkg

@@ -36,7 +36,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(inputs.build_arm64 && '[{"arch":"amd64","runner":"ubuntu-24.04"},{"arch":"arm64","runner":"ubuntu-24.04-arm"}]' || '[{"arch":"amd64","runner":"ubuntu-24.04"}]') }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -56,11 +56,11 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 10.34.4
           run_install: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
@@ -72,7 +72,7 @@ jobs:
       - run: pnpm run release:linux:smoke:deb -- --convert-smoke
       - run: pnpm run release:linux:smoke:docker
         if: github.event_name != 'workflow_dispatch' || inputs.docker_smoke
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: imgconvert-linux-${{ matrix.arch }}-release
           if-no-files-found: error

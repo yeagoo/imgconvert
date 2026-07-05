@@ -41,7 +41,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag }}
       - run: |
@@ -62,11 +62,11 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 10.34.4
           run_install: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
@@ -98,7 +98,7 @@ jobs:
           test -n "$appimage"
           chmod +x "$appimage"
           "$appimage"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: imgconvert-updater-linux-${{ inputs.tag }}
           if-no-files-found: error
@@ -110,7 +110,7 @@ jobs:
             src-tauri/target/release/bundle/SHA256SUMS
       - name: Publish GitHub Release assets
         if: ${{ inputs.publish_release }}
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.tag }}
           draft: ${{ inputs.draft_release }}

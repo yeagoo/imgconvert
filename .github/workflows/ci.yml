@@ -43,12 +43,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
         with:
           version: 10.34.4
           run_install: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
@@ -62,7 +62,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -84,12 +84,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
         with:
           version: 10.34.4
           run_install: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
@@ -105,7 +105,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.96.0
       - run: pnpm install --frozen-lockfile
       - run: pnpm run fuzz:ci
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: fuzz-corpus-replay-report
           if-no-files-found: error
@@ -117,7 +117,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -144,9 +144,9 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.96.0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
       - run: node scripts/test-external-codecs-ci.mjs
@@ -156,12 +156,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
         with:
           version: 10.34.4
           run_install: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
@@ -183,12 +183,12 @@ jobs:
     needs: frontend
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
         with:
           version: 10.34.4
           run_install: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
@@ -212,7 +212,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(inputs.package_smoke_arm64 && '[{"arch":"amd64","runner":"ubuntu-24.04"},{"arch":"arm64","runner":"ubuntu-24.04-arm"}]' || '[{"arch":"amd64","runner":"ubuntu-24.04"}]') }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Skip arm64 package smoke on pull requests
         if: github.event_name == 'pull_request' && matrix.arch == 'arm64'
         run: echo "arm64 package smoke runs on push, tag, and manual CI only."
@@ -236,12 +236,12 @@ jobs:
             librsvg2-dev \
             patchelf
         if: github.event_name != 'pull_request' || matrix.arch != 'arm64'
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         if: github.event_name != 'pull_request' || matrix.arch != 'arm64'
         with:
           version: 10.34.4
           run_install: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         if: github.event_name != 'pull_request' || matrix.arch != 'arm64'
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -255,7 +255,7 @@ jobs:
         if: github.event_name != 'pull_request' || matrix.arch != 'arm64'
       - run: pnpm run release:linux:smoke:deb:debug
         if: github.event_name != 'pull_request' || matrix.arch != 'arm64'
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: github.event_name != 'pull_request' || matrix.arch != 'arm64'
         with:
           name: imgconvert-linux-${{ matrix.arch }}-debug
