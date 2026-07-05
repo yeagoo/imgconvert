@@ -5,6 +5,466 @@
 
 ---
 
+## 2026-07-05 — Tauri updater 真发布 smoke 补强
+
+Codex 开始推进 Tauri updater 真发布闭环,把发布前后 smoke 也纳入仓库:
+
+- **updater key**:本机生成 Tauri updater signing keypair 到 `~/.tauri/imgconvert-updater.key*`,私钥文件权限收紧为 `0600`;GitHub Secrets 已配置 `TAURI_UPDATER_PUBKEY` 与 `TAURI_SIGNING_PRIVATE_KEY`,未设置无密码 key 不需要的 password secret。
+- **远端 artifact smoke**:`Updater Release` workflow 在上传 Release assets 前会执行签名后的 AppImage,通过 `IMGCONVERT_PACKAGE_CONVERT_SMOKE=1` 跑真实 core 转换 smoke。
+- **发布后 smoke**:新增 `release:updater:smoke` / `scripts/smoke-tauri-updater-release.mjs`,从 GitHub Release 下载 `latest.json`、目标平台 artifact 和 `.sig`,校验 manifest 签名与远端 `.sig` 一致;同架构 Linux AppImage 会继续执行隐藏转换 smoke。
+- **guardrail/docs**:`release:platform:check` 现在检查 updater smoke 脚本、workflow smoke step 和 [UPDATER.md](UPDATER.md) 使用说明。
+
+边界:
+
+- 真正的 in-app 增量升级仍需要“旧版本已安装/运行 + 新版本 Release 已发布”的双版本场景。当前仓库 smoke 覆盖的是发布 manifest、签名、可下载 artifact 和 updater AppImage runtime。
+
+---
+
+## 2026-07-05 — README 状态同步 + 发布剩余项 readiness 收口
+
+Codex 修复 README 仍停留在早期 P0/P1 状态的问题,并把“剩余开发/验收项”拆成 repo 内可检查项与外部前置项:
+
+- **README 同步**:功能与当前状态改为反映 P0/P1/P2/P3 repo 侧已完成,剩余主要是 Apple/Windows 签名与商店、Flathub 审核、真实 updater 发布、真实 corpus 和跨平台 benchmark。
+- **新增 `docs:check`**:`scripts/check-readme-status.mjs` 拦截 README 中“前端串行”“Release MVP 尚未开始”等过期表述,并要求 README 保留 release readiness 和平台检查入口。
+- **readiness check 模式**:`release:readiness` 新增 `--check`,只校验报告能生成和本地脚本接线,不要求已有 `.dmg/.msi` 或签名证书,适合放入 `release:platform:check`。
+- **外部项表达更准确**:`release:readiness` 现在单独列出 Flathub 主包提交、真实图片 corpus fuzz/replay、Windows benchmark 等外部前置;macOS direct 也区分签名 identity 与 notarization 凭据。
+- **CI/guardrail 接线**:`docs:check` 接入 `quality:security`、CI security job 和 `release:platform:check`,后续修改发布/路线图时会同步检查 README 状态是否漂移。
+
+边界:
+
+- 本批不声称完成真实 Apple Developer 公证、Windows 代码签名、Partner Center、Flathub 审核或真实图片 corpus 长跑;这些仍需要对应账号、证书、设备或样张。
+
+---
+
+## 2026-07-05 — 发布 readiness 报告入口
+
+Codex 继续做不依赖外部账号/硬件的收口,把“哪些能本机验证、哪些必须等真实平台/证书”的状态做成可重复运行的报告:
+
+- **新增 `release:readiness`**:`scripts/report-release-readiness.mjs` 只读仓库和环境变量,列出本机静态检查入口、已有 release artifact、updater/Flatpak/HEIC/macOS/Windows 的外部前置条件。
+- **不触发付费资源**:脚本不构建、不联网、不触发 GitHub Actions,也不打印密钥值;只显示相关 env 是否已设置。
+- **输出形态**:默认打印人类可读报告,`--json` 可给后续 CI/发布脚本消费,`--require-ready` 可在本地 repo 脚本缺失时返回非零。
+- **guardrail**:`release:platform:check` 静态校验该入口、关键 env marker 与文档接线,防止后续发布状态说明再次散落。
+
+验证:
+
+- `pnpm run release:readiness`:通过。
+- `node scripts/report-release-readiness.mjs --json`:通过;`pnpm --silent run release:readiness -- --json` 同样可用于机器消费。
+- `pnpm run release:platform:check`:通过。
+
+边界:
+
+- readiness 报告不替代真实 `.deb/.rpm/AppImage/.dmg/.msi/.exe` 构建,也不替代 Apple/Windows/Flathub/GitHub Releases 的实际提交验收。
+
+---
+
+## 2026-07-05 — 架构前提静态护栏
+
+Codex 把“全程保持”的主架构红线从文档要求收口为本机可跑的静态检查:
+
+- **新增 `architecture:check`**:`scripts/check-architecture-guardrails.mjs` 校验主包 Apache-2.0、pnpm 锁文件策略、`image/default-features=false`、`libavif-sys/default-features=false`、`ssimulacra2/default-features=false`、`lcms2/static`、`cargo-deny` 不放行 GPL/AGPL/LGPL。
+- **HEIC 边界**:检查 core `READABLE/WRITABLE_FORMATS` 仍只有 JPEG/PNG/WebP/AVIF,Tauri 输出解析继续拒绝 HEIC/HEIF,macOS ImageIO 与 Windows WIC provider 继续 read-only,外部 HEIC manifest 继续拒绝 writable。
+- **Store/Flatpak 边界**:检查 `IMGCONVERT_DISABLE_EXTERNAL_CODECS` 的 build-time/runtime gate、MAS/Windows store preflight、Flatpak 主包禁宿主 helper 且不包含 `libheif`/`x265`/helper。
+- **文件访问边界**:检查导入/输出/转换读写仍经过 `access.rs` 的用户显式授权与 scoped access hook。
+- **wiring**:`release:platform:check` 与 `quality:security` 现在都会先跑 `architecture:check`;平台 guardrail 反向检查该 wiring,防止后续误删。
+
+验证:
+
+- `pnpm run architecture:check`:通过。
+- `pnpm run release:platform:check`:通过。
+
+边界:
+
+- 这是 repo 静态护栏,不能替代 `cargo deny` 的完整依赖许可解析,也不能替代真实 MAS/MS Store/Flathub 提交验收。
+
+---
+
+## 2026-07-05 — 质量 heuristics 第三批:JPEG 色度网格指纹
+
+Codex 继续推进“更多压缩噪声指纹”里不依赖真实图片 corpus 的部分:
+
+- **JPEG chroma grid hint**:`detect_lossy_artifacts()` 在 PNG 输入上新增 JPEG 8×8 色度网格评分,覆盖“亮度边界不明显但 Cb/Cr 在块边界跳变”的有损来源痕迹。
+- **保守触发**:新评分仍要求 8×8 边界平均差值达到绝对阈值,且相对块内变化超过阈值;原有 JPEG 亮度网格与 WebP-like 4×4 评分不降阈值。
+- **代际防护联动**:Tauri 层继续只看 core 是否返回 `LossyArtifactHint`,因此用户启用 generation loss protection 时,这类 PNG 会按疑似有损来源套用收益门槛。
+- **测试/guardrail**:core 单测与 `test:image-quality` integration fixture 覆盖 chroma-grid case;`release:platform:check` 增加 marker 防回退。
+
+边界:
+
+- 这仍是 conservative hint,不是“来源格式证明”。真实相机/社交平台 PNG corpus 的误报率还需要后续 corpus replay 继续积累。
+
+---
+
+## 2026-07-05 — AVIF metadata extractor 收口
+
+Codex 继续收口 metadata 管线里一个维护缺口:
+
+- **通用 AVIF metadata 提取**:`metadata_from_image_format()` 不再把 `Format::Avif` 当作空 metadata,新增 `extract_avif_metadata()` 复用 libavif parse 阶段的 `avifImage.icc/exif/xmp`。
+- **解码路径去重**:`AvifCodec.decode()` 改为共用 `avif_metadata_from_image()`,避免 AVIF decode 与通用 metadata extractor 各自复制 raw blob 逻辑。
+- **测试/guardrail**:`avif_preserves_icc` 增加 `extract_avif_metadata()` 和 `metadata_from_image_format(&av, Format::Avif)` 断言;`release:platform:check` 增加 AVIF metadata extractor marker。
+
+验证:
+
+- `cargo +1.96.0 test -p imgconvert-core avif_preserves_icc -- --nocapture`:通过。
+
+边界:
+
+- AVIF 仍只声明 ICC/EXIF/XMP raw metadata;IPTC IIM 仍只在 JPEG APP13 中原生写回。
+
+---
+
+## 2026-07-05 — 导入 DPI ping:AVIF EXIF Resolution
+
+Codex 继续补齐导入 metadata ping,把 EXIF Resolution DPI 解析扩到 AVIF:
+
+- **AVIF EXIF DPI**:`probe()` 的 AVIF 路径在 `avifDecoderParse` 后读取 libavif 暴露的 `image.exif`,复用现有 TIFF/EXIF Resolution parser,返回 `ImageProbe.dpi`。该路径不调用 `avifDecoderNextImage`,不做像素解码。
+- **测试覆盖**:新增 AVIF preserve-metadata fixture,用 core 自身写入 EXIF Resolution 后再 `probe()` 验证 144×72 DPI 与尺寸。
+- **guardrail/docs**:`release:platform:check` 增加 AVIF EXIF DPI marker,ENGINE/ROADMAP 同步声明 PNG/JPEG/WebP/AVIF 均已覆盖导入 DPI ping。
+
+验证:
+
+- `cargo +1.96.0 test -p imgconvert-core probe_avif_reads_exif_resolution_dpi -- --nocapture`:通过。
+
+边界:
+
+- 这只读取 AVIF EXIF Resolution metadata,不声明 AVIF 容器级 nclx/clean aperture/DPI 语义,也不改变 AVIF 输出 metadata 策略。
+
+---
+
+## 2026-07-05 — Tauri updater GitHub Releases 启用 + Flatpak HEIC extension 真包
+
+Codex 把两个此前“留门”的发布项推进到可执行闭环,但仍不把私钥或 LGPL codec 放进主包:
+
+- **Tauri updater 发布通道**:新增 `docs/UPDATER.md`、`release:linux:updater`、`release:updater:sign` 和手动 `Updater Release` GitHub Actions workflow。默认 endpoint 采用 GitHub Releases 静态 `latest.json`:`https://github.com/<owner>/<repo>/releases/latest/download/latest.json`。
+- **updater artifact 签名修正**:`generate-tauri-updater-manifest` 同时支持 Tauri v2 的 `.AppImage/.msi/.exe + .sig` 和旧兼容 `.tar.gz/.zip + .sig`;Linux AppImage 会先 scrub 再用 `tauri signer sign` 重签最终 artifact,避免发布 pre-scrub 签名。
+- **应用内更新入口**:前端新增“应用更新”弹层,通过 `@tauri-apps/plugin-updater` 检查、下载并调用 `@tauri-apps/plugin-process` 重启;capability 只开放 `updater:default` 与 `process:allow-restart`。
+- **Flatpak HEIC extension 真包**:新增 `packaging/flatpak/extensions/heic/com.ivmm.imgconvert.Codecs.Heic.yml`,固定 `libde265 v1.1.1` 与 `libheif v1.23.1` 源码 sha256,构建 decode-only `heif-convert` wrapper,安装 codec manifest/metainfo/LGPL notice。
+- **许可边界**:extension manifest 显式关闭 HEIC encoding、`x265` 和 GPL-only codec 路径;主 Flatpak 仍设置 `IMGCONVERT_DISABLE_EXTERNAL_CODECS=1`,只允许 `/app/extensions/codecs` 下的 addon manifest。
+- **guardrail**:`release:flatpak:verify` 纳入 `release:flatpak:heic:verify`;新增 `release:flatpak:heic:download-check` 用 `flatpak-builder --download-only` 校验 pinned upstream source URL/sha256,不要求主 app runtime 已安装;新增 `release:updater:verify` 校验 `latest.json` 的 URL、平台 key 与本地产物签名一致;`release:platform:check` 校验 updater UI/签名脚本/workflow/文档和 HEIC extension decode-only manifest。
+
+边界:
+
+- GitHub updater 真发布仍需要你在仓库 secrets 中配置 `TAURI_UPDATER_PUBKEY`、`TAURI_SIGNING_PRIVATE_KEY` 和可选密码。
+- Flatpak HEIC extension 已有可构建 manifest,但真实 Flathub addon 提交、专利/频道审核和带真实 HEIC 样张的沙盒运行 smoke 仍需发布阶段执行。
+
+## 2026-07-04 — Flatpak HEIC extension 留门 + Tauri updater 生成式闭环
+
+Codex 补齐两个发布后续项的 repo 侧闭环,但不把外部 codec 或 updater secrets 写进默认主包:
+
+- **Flatpak HEIC extension point**:主 Flatpak manifest 继续设置 `IMGCONVERT_DISABLE_EXTERNAL_CODECS=1`,禁用宿主 PATH/XDG helper;同时新增 `IMGCONVERT_ALLOW_FLATPAK_CODEC_EXTENSIONS=1` 与 `com.ivmm.imgconvert.Codecs` extension point,只允许 `/app/extensions/codecs` 下的 Flatpak 扩展 manifest 生效。
+- **HEIC extension 模板**:新增 `packaging/flatpak/extensions/heic/` 模板,定义 `com.ivmm.imgconvert.Codecs.Heic`、decode-only `imgconvert-codec-heic.json` 和 AppStream addon。模板不包含 LGPL helper 源码/二进制,不让主包声明内置 HEIC。
+- **后端发现边界**:`external_codecs` 在全局禁外部 codec 时只扫描 Flatpak extension 挂载目录,不会扫描手动 helper、XDG、PATH 或宿主系统 helper;诊断 UI 仍能看到 extension manifest 的 accepted/rejected 状态。
+- **Tauri updater 留门**:新增 `release:updater:prepare`,只有提供 `TAURI_UPDATER_PUBKEY` 与 `TAURI_UPDATER_ENDPOINTS` 时才生成 `tauri.updater.generated.conf.json`,开启 `createUpdaterArtifacts` 与 updater endpoint。默认 `tauri.conf.json` 不硬编码公钥/endpoint。
+- **updater manifest**:新增 `release:updater:manifest`,从 Tauri updater artifacts(`*.AppImage.tar.gz`/`*.app.tar.gz`/Windows zip)及同名 `.sig` 生成静态 `latest.json`;Flatpak 更新仍交给 Flathub。
+- **guardrail**:`release:flatpak:verify` 校验 extension point/模板;`release:platform:check` 校验 updater 插件、生成脚本和默认配置无 secrets。
+
+验证:
+
+- `pnpm run release:flatpak:verify`:通过。
+- `pnpm run release:platform:check`:通过。
+
+边界:
+
+- 本批没有提供真实 HEIC helper、LGPL 源码包、Flathub extension 提交,也没有生成真实 updater 签名。正式启用 updater 还需要 Tauri signing key、HTTPS endpoint 和 release artifact 上传策略。
+
+---
+
+## 2026-07-04 — 导入 DPI ping:WebP EXIF Resolution
+
+Codex 继续补齐 P1 导入 metadata ping,把 EXIF Resolution DPI 解析扩到 WebP 容器:
+
+- **WebP EXIF DPI**:`probe()` 仍使用 `webp::BitstreamFeatures` 获取尺寸并拒绝动画,额外 best-effort 扫描 RIFF `EXIF` chunk,解析 TIFF IFD0 的 `XResolution` / `YResolution` / `ResolutionUnit`。
+- **边界安全**:复用已有 WebP chunk parser 的长度、padding 与截断检查;EXIF chunk 缺失或损坏时只返回 `dpi:None`,不影响 WebP 尺寸 ping。DPI parser 同时接受裸 TIFF payload 与带 `Exif\0\0` 前缀的 EXIF payload。
+- **测试覆盖**:新增 WebP preserve-metadata fixture,覆盖 EXIF Resolution centimeter → DPI 换算;另补 `Exif\0\0` 前缀兼容测试。
+- **guardrail/docs**:`release:platform:check` 增加 WebP EXIF DPI marker,ENGINE/ROADMAP 同步声明 PNG/JPEG/WebP 已有导入 DPI ping,AVIF 仍为空。
+
+验证:
+
+- `cargo +1.96.0 test -p imgconvert-core probe_webp -- --nocapture`:通过。
+
+边界:
+
+- AVIF 容器级 DPI 仍未声明;本批不改变转换输出与 WebP metadata preserve/strip 策略。
+
+---
+
+## 2026-07-04 — 导入 DPI ping:JPEG EXIF Resolution
+
+Codex 补齐 P1 导入 metadata ping 里遗留的 EXIF Resolution DPI 支持:
+
+- **JPEG EXIF DPI**:`probe()` 在 JPEG APP1 EXIF 中解析 TIFF IFD0 的 `XResolution` / `YResolution` / `ResolutionUnit`,支持 inch 与 centimeter 单位,并换算成现有 `ImageProbe.dpi`。若 JPEG 同时有 JFIF 与 EXIF DPI,优先使用 EXIF,JFIF 作为回退。
+- **复用 TIFF 解析边界**:实现复用已有 EXIF/TIFF header 与 IFD entry 解析,新增 RATIONAL 读取函数;遇到非法单位、0 分母、缺失 tag 时保守返回 `None`,不影响尺寸探测。
+- **测试覆盖**:新增生成式 JPEG fixture,覆盖 inch 与 centimeter 两种 EXIF Resolution 单位,并保留现有 EXIF orientation 尺寸旋正测试。
+- **guardrail**:`release:platform:check` 增加 probe metadata marker,防止后续把 EXIF DPI 解析或测试误删。
+
+验证:
+
+- `cargo +1.96.0 test -p imgconvert-core probe_jpeg -- --nocapture`:通过。
+
+边界:
+
+- WebP/AVIF 容器级 DPI 仍未声明;当前只补 JPEG EXIF Resolution。
+
+---
+
+## 2026-07-04 — Fuzz crash artifact 最小化入口
+
+Codex 在 fuzz/corpus replay 之上补齐 crash artifact triage 的工程入口:
+
+- **dry-run 最小化计划**:新增 `scripts/minimize-fuzz-artifacts.mjs` 与 `pnpm run fuzz:minimize`,默认不调用 `cargo-fuzz`,只扫描 `fuzz/artifacts/<target>/`、校验 target、生成 `target/fuzz-corpus/minimize-report.json`。没有 artifact 时也能稳定通过,适合本机/CI guardrail。
+- **显式 tmin 执行**:新增 `pnpm run fuzz:minimize:run`,需要本机已安装 `cargo-fuzz`,并逐个执行 `cargo fuzz tmin <target> <artifact>`。执行后会用现有 `fuzz:replay -- --skip-prepare --include-artifacts` 复跑 minimized artifacts,让 crash 输入进入普通回归。
+- **隐私边界**:报告继续只写仓库相对路径或外部 basename,不记录外部真实图片绝对路径;脚本调用 cargo 使用 argv,不拼 shell。
+- **guardrail/docs**:`release:platform:check` 校验最小化脚本、package 入口和 report/tmin marker;[FUZZING.md](FUZZING.md) 增加 triage/minimize 使用方式。
+
+验证:
+
+- `pnpm run fuzz:minimize`:通过。
+
+边界:
+
+- 本批不默认运行长时间 fuzz,也不提交真实 crash 样本。真正变异运行仍需开发者显式执行 `cargo fuzz run <target>`。
+
+---
+
+## 2026-07-04 — 质量 heuristics 第二批:PNG WebP-like block hint
+
+Codex 继续补图像质量 heuristics,把“PNG 里包着二次有损来源”的检测从 JPEG 网格扩到 WebP-like 块边界:
+
+- **WebP-like 4x4 块边界 hint**:`detect_lossy_artifacts()` 现在同时返回 `jpeg_grid_score` 与 `webp_block_score`。PNG 中明显 4x4 块边界会触发 hint;Tauri 代际损失防护仍只依赖 `is_some()`,无需前端或命令契约变化。
+- **误报收紧**:4x4 检测加入绝对边界差门槛,保守过滤平滑渐变 PNG。单测覆盖 smooth PNG 不误报、JPEG 8x8 fixture 命中、WebP-like 4x4 fixture 命中。
+- **质量测试/guardrail**:`test:image-quality` 的 artifact fixture 扩展到 JPEG-grid 与 WebP-like block;`release:platform:check` 静态检查 `webp_block_score`、4x4 scorer 和 integration test,防止后续只保留文案却回退实现。
+
+验证:
+
+- `cargo +1.96.0 test -p imgconvert-core lossy_artifact_hint_detects -- --nocapture`:通过。
+- `cargo +1.96.0 test -p imgconvert-core --test image_quality quality_artifact_hint_detects_block_artifact_corpus_fixtures -- --nocapture`:通过。
+
+边界:
+
+- 这是保守启发式,不是来源格式鉴定器;只用于用户开启 `generationLossProtection` 时减少假无损 PNG 的二次有损重压。
+
+---
+
+## 2026-07-04 — GitHub Actions 成本护栏第一批
+
+Codex 按“降低 Actions 账单风险”的方向补齐 repo 侧默认策略:
+
+- **manual-only guardrail**:新增 `scripts/check-ci-cost-guardrails.mjs` 与 `pnpm run ci:cost:check`,静态检查 CI/Linux Release/macOS Smoke/Windows Smoke 都保持 `workflow_dispatch` 手动触发,拒绝 `push` / `pull_request` / `schedule` 自动触发。
+- **Linux release 默认降成本**:`release-linux.yml` 的 Docker runtime smoke 默认改为关闭,新增 `build_arm64=false` 默认值;release matrix 默认只跑 amd64,只有显式勾选 `build_arm64` 才加入 `ubuntu-24.04-arm`。
+- **CI 可选项细分**:`ci.yml` 新增 `fuzz_corpus=false` 和 `package_smoke_arm64=false`;fuzz corpus replay 作为可选 Ubuntu job,运行 `pnpm run fuzz:ci` 并上传 `target/fuzz-corpus/*.json`。package smoke 默认不再包含 arm64 runner。
+- **付费平台确认**:`macos-smoke.yml` 和 `windows-smoke.yml` 新增 `confirm_paid_runner=false`;未显式确认时 job 在调度前跳过,避免误点 workflow 就分配 hosted macOS/Windows runner。
+- **文档**:新增 [CI_COSTS.md](CI_COSTS.md),列出默认关闭项与何时开启。
+
+验证:
+
+- `pnpm run ci:cost:check`:通过。
+
+边界:
+
+- 这批不触发远端 GitHub Actions,只修改 repo 侧 workflow 和静态检查。真正远端实跑仍需要你在 GitHub UI 手动选择对应开关。
+
+---
+
+## 2026-07-04 — Fuzz corpus replay 回归入口
+
+Codex 在第一批 fuzz/corpus 入口之上补了一个不依赖 `cargo-fuzz` 的低成本回归闭环:
+
+- **Rust replay example**:新增 `crates/imgconvert-core/examples/replay_fuzz_corpus.rs`,递归读取 `fuzz/corpus/<target>/` 和可选 `fuzz/artifacts/<target>/`,对 decode/probe/thumbnail、bounded convert、metadata semantics 三条路径做普通进程内 replay。每个输入用 `catch_unwind` 捕获 Rust panic,并把输出 magic mismatch 等 invariant 作为失败报告。
+- **脚本入口**:新增 `scripts/replay-fuzz-corpus.mjs` 与 `pnpm run fuzz:replay`,默认先准备 generated/real corpus,再运行 Rust replay,并写 `target/fuzz-corpus/replay-report.json`。`pnpm run fuzz:smoke` 现在串起 prepare + fuzz target compile + corpus replay。
+- **边界收紧**:`decode_pipeline` 的 thumbnail 调用移到 probe + 像素预算之后,避免真实 corpus 大图在 fuzz/replay smoke 中绕过预算直接触发重解码。
+- **guardrail/docs**:`release:platform:check` 会检查 replay 脚本、Rust example、`fuzz:replay`/`fuzz:ci` 入口和 `fuzz:smoke` 包含 replay;[FUZZING.md](FUZZING.md) 已补 corpus replay 使用方式。
+
+边界:
+
+- 长时间变异 fuzz 仍需要手动安装 `cargo-fuzz` 后运行 `cargo fuzz run <target>`。本批目标是让 generated seeds、真实本地 corpus 和后续 minimized crash artifacts 能进入普通 CI/本机回归,不引入额外 GitHub Actions 费用。
+
+---
+
+## 2026-07-04 — Fuzz + 真实图片 corpus 第一批
+
+Codex 为图像管线补上 fuzz 和真实 corpus 的工程入口,同时避免把版权不明/隐私图片放进 Apache-2.0 仓库:
+
+- **cargo-fuzz crate**:新增独立 `fuzz/` crate,并在 workspace 中显式 exclude,避免普通 `cargo test`/`clippy` 被 fuzz 依赖拖慢。三个 target 分别覆盖:
+  - `decode_pipeline`:magic、probe、thumbnail、lossy artifact hint 和有界 decode。
+  - `convert_pipeline`:通过 probe 和像素预算过滤后,以快速保守参数转 PNG/JPEG/WebP/AVIF,并用 timed API 控制候选边界。
+  - `metadata_semantics`:EXIF/XMP/IPTC 任意字节输入的语义检查和规范化。
+- **deterministic seeds**:新增 `crates/imgconvert-core/examples/generate_fuzz_corpus.rs`,用 core 自身生成小尺寸 PNG/JPEG/WebP/AVIF 种子、截断容器样本和 metadata 语义样本,不提交二进制图片。
+- **真实图片 corpus 导入**:新增 `scripts/prepare-fuzz-corpus.mjs` 与 `pnpm run fuzz:prepare`。脚本从 ignored `corpus/real/` 和 `IMGCONVERT_REAL_CORPUS_DIRS` 导入 magic 识别的 JPEG/PNG/WebP/AVIF,复制到 ignored `fuzz/corpus/*`,并写本地 `target/fuzz-corpus/real-corpus-manifest.json`。`pnpm run fuzz:prepare:require-real` 可在需要真实样张时强制至少导入一张。
+- **本地检查入口**:`pnpm run fuzz:check` 编译 fuzz targets;`pnpm run fuzz:smoke` 生成 corpus 后执行编译检查。长时间运行仍用手动 `cargo fuzz run <target>`,避免默认 CI 费用失控。
+- **文档/guardrail**:新增 [FUZZING.md](FUZZING.md),并让 `release:platform:check` 校验 fuzz target、真实 corpus 导入脚本和 ignored corpus 目录存在。
+
+边界:
+
+- 本批没有提交第三方真实图片,也没有默认在 CI 跑长时间 fuzz。真实相机样张由本机目录导入;崩溃样本若含私有图片,需要本地最小化或用生成 fixture 复现后再分享。
+
+---
+
+## 2026-07-04 — 平台质量 benchmark 数据闭环第一批
+
+Codex 将之前只有隐藏入口的 platform benchmark 收口成可归档、可复核、可反馈到运行时策略的闭环:
+
+- **benchmark 默认改为 release profile**:`pnpm run bench:platform` 现在默认用 `cargo run --release`,避免 dev profile 数据误导默认参数;`--profile=debug` 仅用于脚本烟测。脚本兼容 pnpm 传入的 `--`,并支持 `--output=` / `--no-output`。
+- **报告产物**:脚本仍输出原始 JSON lines,同时生成 `target/benchmarks/*.json`,包含 host、命令参数、samples、median 汇总和默认参数建议。`bench:avif:macos` 复用同一报告层,Apple Silicon 实测也会留下同格式报告。
+- **本机 Linux arm64 release 数据**:`1024x768`,quality 82,3 轮。AVIF speed 8:median **432.170 ms**,**34,477 B**,1.820 MP/s;AVIF speed 10:median **175.945 ms**,**67,290 B**,4.470 MP/s。WebP method 4:median **28.280 ms**,**17,220 B**,27.809 MP/s;WebP method 6:median **31.570 ms**,**17,270 B**,24.911 MP/s。
+- **默认参数复核**:当前数据下继续保留 **AVIF speed=8**(相对 speed 10 约省 48.8% 体积,虽然慢约 2.46x)和 **WebP method=4**(method 6 同时更慢且更大)。AVIF speed 10 仍可作为用户手动“更快”选择,不改默认。
+- **wall-clock 软超时**:core 新增 `convert_best_of_with_color_policy_timeout()` / `convert_auto_quality_with_color_policy_timeout()`。Tauri 转换路径默认每文件 **180s** 软超时,可用 `IMGCONVERT_CONVERT_TIMEOUT_SECONDS` 覆盖,`0/off/disabled/none` 可关闭。由于编码器在进程内运行,单个 C/Rust codec 调用不做强杀;超时会在解码后、候选编码/评分边界停止,并防止超时结果写盘。
+- **guardrail**:`release:platform:check` 增加静态检查,防止 benchmark 回退到 debug profile、报告/推荐丢失或 Tauri 绕过软超时。
+
+验证:
+
+- `pnpm run bench:platform -- --output=target/benchmarks/platform-linux-arm64-release-default.json`:通过。
+- `cargo +1.96.0 test -p imgconvert-core timed_convert_reports_wall_clock_timeout`:通过。
+- `cargo +1.96.0 test --manifest-path src-tauri/Cargo.toml convert_wall_clock_timeout_parser_handles_defaults_disable_and_clamp`:通过。
+- `cargo +1.96.0 test --manifest-path src-tauri/Cargo.toml runtime_diagnostics_expose_concurrency_and_avif_thread_limits`:通过。
+
+边界:
+
+- 本次为 repo 侧闭环 + Linux arm64 实测。macOS M 系列、Windows x64/arm64 的真实 runner 数据仍建议在对应发布验收时用同一 `bench:platform` 报告格式补齐;为控制 GitHub Actions 费用,本次没有自动触发远端 macOS/Windows benchmark。
+
+---
+
+## 2026-07-04 — 图像质量测试体系第一批
+
+Codex 新增一套可本机和 CI 重复运行的 image quality integration tests,不依赖外部版权图片或大 corpus:
+
+- **固定入口**:`pnpm run test:image-quality` 调用 `scripts/check-image-quality.mjs`,实际运行 `cargo +1.96.0 test -p imgconvert-core --test image_quality`。普通 `cargo test -p imgconvert-core` 也会自动包含这组 integration tests。
+- **Golden image**:测试内生成 deterministic RGBA fixtures。PNG/WebP/AVIF lossless 路径必须像素逐字节一致;JPEG/WebP/AVIF 高质量有损路径必须达到 PSNR/MAE 下限,防止编码参数或色彩路径回归成明显劣化。
+- **Corrupted input**:覆盖空输入、随机字节、截断 PNG/JPEG/WebP/AVIF、超大 PNG header,要求 probe/thumbnail/convert 均干净失败,不产出伪成功结果。
+- **Determinism**:PNG、baseline JPEG、WebP lossless、AVIF lossless 同输入同参数必须字节稳定,用于发现隐藏时间戳、随机 seed 或并发非确定性。
+- **Artifact corpus fixture**:内置 JPEG 8×8 网格 synthetic fixture,验证 `detect_lossy_artifacts()` 不漏报,同时 smooth PNG 不误报。
+
+验证:
+
+- `pnpm run test:image-quality`:通过。
+- `cargo +1.96.0 test -p imgconvert-core`:通过(61 tests)。
+
+边界:
+
+- 这批是小型 deterministic suite,不是 fuzz/corpus 的替代品。真实相机样张、恶意文件 corpus、跨平台性能/质量数据仍需后续补充。
+
+---
+
+## 2026-07-04 — 语义级 metadata 模块完整实现
+
+Codex 在前两批 raw passthrough / XMP orientation 清理之上,补齐可自动测试、无新增许可风险的语义 metadata 模块:
+
+- **IPTC IIM/JPEG APP13**:`RawMetadata` / `ImageData` 新增 `iptc` blob。JPEG 读取 Photoshop APP13 IRB 中的 IPTC-NAA resource(`0x0404`),开启 `preserveMetadata` 写回最小合法 APP13 resource;默认仍剥离。Tauri 结果缓存 key 在 metadata override 存在时纳入 IPTC,避免同像素不同 metadata 误命中。
+- **HEIC sidecar 扩展**:metadata sidecar JSON 向后兼容地新增可选 `iptc` 字段;旧 helper 不受影响。
+- **语义检查 API**:新增 `inspect_metadata_semantics()` / `MetadataSemanticReport`,可报告 EXIF orientation、EXIF MakerNote 的 offset/byte_len、IPTC dataset 列表与常见字段名、XMP orientation/history 语义是否存在。MakerNote 与厂商私有字段只识别边界,不做猜测性解析或改写。
+- **多命名空间 XMP 清理**:XMP 清理从固定 `tiff:` / `exif:` / `xmpMM:` 前缀扩展为 namespace-aware。若 XMP 用自定义前缀绑定 `http://ns.adobe.com/tiff/1.0/`、`http://ns.adobe.com/exif/1.0/` 或 `http://ns.adobe.com/xap/1.0/mm/`,仍会移除 orientation 与 edit history 语义,保留普通业务字段。
+- **回归测试**:新增 JPEG IPTC 默认剥离/显式保留、MakerNote 不改写、IPTC dataset 解析、XMP namespace alias 清理测试。该批不新增依赖,不引入 GPL/AGPL/LGPL。
+
+验证:
+
+- `cargo +1.96.0 test -p imgconvert-core`:通过(56 tests)。
+- `cargo +1.96.0 test --manifest-path src-tauri/Cargo.toml`:通过(96 lib tests + 4 bin tests)。
+
+边界:
+
+- 当前仍不猜测 Nikon/Canon/Sony 等 MakerNote 私有字段语义;后续若要做厂商级修正,必须引入真实 corpus 和逐厂商 fixture。
+- PNG/WebP/AVIF 仍以 ICC/EXIF/XMP 为原生 metadata 写回范围;IPTC IIM 当前只在 JPEG APP13 中原生写回。
+
+---
+
+## 2026-07-04 — AVIF 真无损对外启用
+
+Codex 将前一批 AVIF lossless spike 收口为对外能力:
+
+- **core 能力打开**:`AVIF_LOSSLESS_SUPPORTED=true`,`LOSSLESS_FORMATS` 加入 `Format::Avif`,`Format::supports_lossless()` 同步返回 true。`lossless=true` 的 AVIF 编码强制 AOM 后端 + identity matrix + full range + quantizer 0 + YUV444,不会把 `quality=100` 冒充成无损。rav1e spike 在本机仍有 1 channel delta,且 libavif 上游明确 rav1e 不支持 lossless,所以有损 AVIF 继续用 rav1e,无损 AVIF 切 AOM。
+- **像素级 guardrail**:新增 AVIF lossless RGBA round-trip 回归测试,覆盖透明 alpha,并故意传入 YUV420 请求验证无损路径会强制 YUV444。`probe_avif_lossless_candidate()` 现在以 YUV444 case 是否逐字节一致作为能力支持条件。
+- **Tauri/前端同步**:`capabilities().lossless` 通过 core 自动包含 `avif`;前端 web fallback 同步加入 `avif`。Tauri `encode_options_for()` 允许 AVIF lossless 穿透到 core,且代际损失防护不再把 AVIF lossless 目标当作有损目标跳过。
+- **边界保持**:AVIF 自动质量仍关闭,AVIF 多候选仍不展开,16-bit/HDR/nclx 落盘保真仍是后续项目。
+
+---
+
+## 2026-07-04 — Review 修复 + 平台 benchmark / AVIF lossless / metadata 语义第二批
+
+Codex 先 review 前几批图像管线改动,修复资源上限问题,再推进三个深水项的可执行闭环:
+
+- **review 修复:metadata 资源上限**:core 新增 `MAX_METADATA_BLOB_BYTES=16 MiB`,与 HEIC helper sidecar 上限一致。JPEG Extended XMP 声明总长、PNG `iCCP`/压缩 `iTXt` 解压结果、WebP/AVIF metadata copy 和各格式写回路径都受该上限约束,避免恶意 metadata 绕过像素上限造成大内存分配。新增 oversized Extended XMP、zlib 膨胀和写入拒绝回归测试。
+- **平台质量 benchmark harness**:新增通用 `pnpm run bench:platform` / `scripts/benchmark-platform.mjs`,隐藏入口 `IMGCONVERT_PLATFORM_BENCHMARK=1` 可在 Linux/macOS/Windows/arm64 上输出 AVIF/WebP JSON lines。默认覆盖 AVIF speed 8/10 与 WebP method 4/6,支持宽高、轮数、quality、格式和参数环境变量覆写;旧 `bench:avif:macos` 仍兼容。
+- **AVIF 真无损启用尖刺**:`lossless=true` 的 AVIF 内部候选现在尝试 identity matrix + full range + quantizer 0 + YUV444。`probe_avif_lossless_candidate()` 扩为多 case 报告(透明/不透明、YUV444/YUV420 请求、最大通道差和字节数)。`AVIF_LOSSLESS_SUPPORTED` 仍保持 `false`,能力矩阵不声明 AVIF lossless,直到多平台/后端实测完全可逆。
+- **metadata 语义第二批**:XMP 语义清理从精确字符串替换升级为轻量 XML token 级处理,覆盖 `tiff:Orientation` / `exif:Orientation` 的属性、普通节点、自闭合节点,并移除 `xmpMM:History` 编辑历史节点。仍不猜测厂商 MakerNote 或 IPTC 私有字段。
+
+验证:
+
+- `cargo +1.96.0 test -p imgconvert-core`:通过(53 tests)。
+- `IMGCONVERT_PLATFORM_BENCHMARK_WIDTH=32 IMGCONVERT_PLATFORM_BENCHMARK_HEIGHT=32 IMGCONVERT_PLATFORM_BENCHMARK_ITERATIONS=1 IMGCONVERT_PLATFORM_BENCHMARK_FORMATS=avif,webp IMGCONVERT_PLATFORM_BENCHMARK_AVIF_SPEEDS=10 IMGCONVERT_PLATFORM_BENCHMARK_WEBP_METHODS=0 pnpm run bench:platform`:通过,输出 JSON lines。
+
+剩余边界:
+
+- 平台 benchmark harness 已落地,但 Linux/macOS/Windows/arm64 的真实数据采集和默认参数复核仍需在目标 runner/真机执行。
+- AVIF lossless 仍是尖刺路径,未进入 `LOSSLESS_FORMATS` / 前端能力矩阵。
+- IPTC、EXIF MakerNote 深层语义解析和相机厂商私有字段修正仍需要 corpus 驱动,当前不做破坏性改写。
+
+---
+
+## 2026-07-04 — 图像管线深水项收尾:容器 XMP 可靠性补齐
+
+在色彩管线 v2 之后,继续补齐 metadata fidelity 里与容器手术相关、可自动测试的深水项:
+
+- **AVIF XMP 接入**:libavif decode 现在读取 `image.xmp`,开启 `preserveMetadata` 编码时调用 `avifImageSetMetadataXMP()` 写回。AVIF 现在与 JPEG/PNG/WebP 一样支持 XMP raw packet 的默认剥离/显式保留。
+- **JPEG Extended XMP**:长 XMP 不再因超过单个 APP1 上限而失败。core 会写入标准 XMP marker packet + Extended XMP APP1 分片,读取时按 GUID/总长/offset 重组并覆盖 marker packet。该实现仍是 raw passthrough,不解析 XMP 语义。
+- **PNG 压缩 iTXt XMP**:读取端支持 `XML:com.adobe.xmp` 的 zlib 压缩 `iTXt`;写入端继续输出未压缩 iTXt,保持实现简单且可读。
+- **跨容器测试扩大**:XMP preserve 测试已覆盖 JPEG/PNG/WebP/AVIF;新增长 JPEG XMP 与压缩 PNG iTXt 回归测试。
+
+验证:
+
+- `cargo +1.96.0 test -p imgconvert-core`:通过(49 tests)。
+- `cargo +1.96.0 clippy -p imgconvert-core -- -D warnings`:通过。
+
+边界:
+
+- XMP 仍按 raw packet 透传,只保守清理 orientation;IPTC、MakerNote、XMP editing history 的语义解析仍未做。
+- HDR/PQ/HLG/nclx、16-bit/float 容器落盘和 AVIF 真无损启用仍是后续独立项目。
+
+---
+
+## 2026-07-04 — 色彩管线 v2 完整实现:ICC transform、PNG16 与主图线性 resize
+
+在第一批 `PixelBuffer` 边界之上补齐 core 侧可测试闭环:
+
+- **像素级 ICC transform**:新增 permissive `lcms2` 静态依赖(MIT),`ColorManagementPolicy::ConvertToSrgb` 已能把嵌入 ICC 的 `RGBA8/RGBA16/RGBAF32` 像素转换到 sRGB。转换后会清空源 ICC,避免 `preserveMetadata=true` 时把已经转成 sRGB 的像素再写回旧 profile。默认 `convert()` 仍保持原语义,不会强制转 sRGB;需要转色时走 `convert_with_color_policy` / `convert_best_of_with_color_policy` / `convert_auto_quality_with_color_policy`。
+- **Tauri/UI 接入**:前端新增「转为 sRGB」开关,`ConvertOptions.colorManagementPolicy` 传入 Tauri,普通/多候选/自动质量三条路径都会调用 core color policy 入口。结果缓存 key 升级为 v4 并纳入 color policy;当策略为 `ConvertToSrgb` 时,HEIC sidecar metadata 即使不保留也会参与缓存 key,因为 ICC 会影响像素结果。
+- **16-bit PNG 保真**:`decode_via_image()` 对 16-bit PNG 保留为 `PixelBuffer::Rgba16`;PNG 默认无损编码会写 `ExtendedColorType::Rgba16`,并在 oxipng 阶段关闭 bit-depth reduction。开启实验性 PNG 有损限色时仍显式降到 RGBA8。
+- **主图线性 resize API**:新增 `resize_linear(&ImageData, width, height)`,对 `RGBA8/RGBA16/RGBAF32` 保留输入编码,内部做 sRGB transfer → linear、预乘 alpha、bilinear 采样。带非空 ICC 的输入会明确返回 Unsupported,调用方需先 `ConvertToSrgb`,避免按 sRGB 曲线 resize 后又写回旧 ICC。
+- **内存修正**:`RGBA16/RGBAF32` 的 LCMS transform 改为固定像素块转换,避免一次性构造整图 typed pixel 副本和输出副本。
+- **能力矩阵**:`color_pipeline_capabilities().icc_transform` 与前端 fallback `colorPipeline.iccTransform` 已改为 `true`。
+
+验证:
+
+- `cargo +1.96.0 test -p imgconvert-core`:通过(46 tests,后续容器 XMP 收尾后为 49 tests)。
+
+边界:
+
+- JPEG/WebP/AVIF 编码入口仍会显式落到 RGBA8,不会声明 16-bit/HDR 落盘保真。
+- F32 目前作为 0..1 display-referred 内部缓冲参与 ICC/resize;HDR 容器信令、PQ/HLG/nclx 端到端仍是后续项。
+- 默认批量转换仍是 metadata 保真策略;用户可显式开启「转为 sRGB」。
+
+---
+
+## 2026-07-04 — 图像管线后续增强:色彩管线 v2 第一批、AVIF lossless probe、metadata 语义与 HEIC sidecar
+
+Codex 启动 ROADMAP「图像管线后续增强路线」里剩余的四个项目,先落地不引入新 copyleft 依赖、可测试的第一批:
+
+- **色彩管线 v2 第一批**:`imgconvert-core::ImageData` 从裸 `rgba: Vec<u8>` 升级为 `PixelBuffer::{Rgba8,Rgba16,RgbaF32}`。现有 JPEG/PNG/WebP/AVIF 编码器仍显式转换到 RGBA8 输出,但管线边界已经能表达 U8/U16/F32,并通过 `color_pipeline_capabilities()` / `capabilities().colorPipeline` 暴露 `linearResize=true`、`iccTransform=false`。ICC 像素级转换不会静默 no-op,请求 `ConvertToSrgb` 会返回 Unsupported。
+- **线性空间缩略图 resize**:core `thumbnail()` 从 image crate 普通 resize 改成 sRGB↔linear、预乘 alpha 的 bilinear 缩放,输出仍为 PNG。该范围仅覆盖缩略图路径,不代表主转换 pipeline 已做 ICC transform 或 16-bit/HDR 编码。
+- **AVIF 真无损尖刺 guardrail**:新增 `probe_avif_lossless_candidate()` 实测当前 rav1e/libavif 路径是否像素完全一致,但 `AVIF_LOSSLESS_SUPPORTED` 仍为 `false`,AVIF 继续不进入 `LOSSLESS_FORMATS`/前端 lossless 能力矩阵。后续只有验证 identity matrix、quantizer、subsample 与 alpha 组合后才可启用。
+- **metadata 语义第一批**:新增公开 `RawMetadata` 与 metadata override 转换入口(`convert_with_metadata` / `convert_best_of_with_metadata` / `convert_auto_quality_with_metadata`)。EXIF orientation 继续规范化为 1;XMP 现在保守移除 `tiff:Orientation` attribute/element,避免像素已旋正后留下二次旋转语义。仍不解析 IPTC/MakerNote/编辑历史。
+- **HEIC/helper metadata sidecar**:外部 HEIC manifest args 向后兼容地允许可选 `{metadata}` 独立 argv。helper 可写 `metadata.json` sidecar,引用同一受控临时目录内的 ICC/EXIF/XMP blob;主程序按 JSON/blob 大小上限读取、禁止路径逃逸、规范化 orientation,再把 metadata override 传入 core。老 `{input} {output}` helper 不受影响。
+- **缓存修正**:Tauri 结果缓存 key 升级到 v3,当 `preserveMetadata=true` 时会纳入 HEIC sidecar metadata hash,避免相同像素但不同 ICC/EXIF/XMP 的输入误命中缓存。
+
+验证:
+
+- `cargo +1.96.0 test -p imgconvert-core`:通过(41 tests)。
+- `cargo +1.96.0 test --manifest-path src-tauri/Cargo.toml`:通过(93 lib tests + 3 bin tests)。
+
+剩余边界:
+
+- 主转换 pipeline 仍未做像素级 ICC transform、16-bit/HDR 编解码或线性空间主图 resize。
+- AVIF 真无损仍未启用。
+- metadata 语义模块仍未解析 IPTC/MakerNote/XMP editing history;AVIF XMP、JPEG Extended XMP 与 PNG 压缩 iTXt XMP 已在后续容器 XMP 收尾批次接入。
+
+---
+
 ## 2026-07-04 — Windows 发布闭环:WIC HEIC、签名、安装 smoke 与 MSIX 留门
 
 Codex 按 Windows 发布第一优先级补齐 repo 侧闭环,并定位了当前远端 Windows runner 失败:
@@ -154,7 +614,7 @@ Codex 梳理 P2/P3 后的图像管线剩余增强项后,先落地一批低风险
 - **后续方案拆分**:ROADMAP 新增“图像管线后续增强路线”,把 AVIF 真无损、`8/16/float` 像素表示 + ICC transform/线性 resize、语义级 metadata、HEIC/helper metadata passthrough 和质量 heuristics 拆成独立后续项。当前不把 RGBA8 管线伪装成像素级色彩管理。
 - **XMP raw packet 透传**:`imgconvert-core` 的 `ImageData` / `Metadata` 增加 `xmp` 字段。JPEG 支持 APP1 Adobe XMP namespace,PNG 支持未压缩 `iTXt XML:com.adobe.xmp`,WebP 支持 `XMP ` chunk 与 VP8X XMP flag。默认仍剥离;只有 `preserveMetadata=true` 才写回。
 - **容器替换语义**:PNG/WebP 写回时会替换旧 XMP chunk,避免重复堆叠;WebP 重建 VP8X 时按当前输出 alpha 与 metadata 重新置位 ICC/EXIF/XMP flags。
-- **边界保持清晰**:AVIF 仍只保留 ICC/EXIF,XMP 暂不接入;XMP 只做 raw packet 透传,不解析 XML,不改写 XMP 内可能存在的 orientation/IPTC/编辑历史字段;JPEG extended XMP 分片与 PNG 压缩 `iTXt` XMP 暂不保留。
+- **当时边界保持清晰**:AVIF 仍只保留 ICC/EXIF,XMP 暂不接入;XMP 只做 raw packet 透传,不解析 XML,不改写 XMP 内可能存在的 orientation/IPTC/编辑历史字段;JPEG extended XMP 分片与 PNG 压缩 `iTXt` XMP 暂不保留。2026-07-04 的容器 XMP 收尾批次已补齐这些容器级 raw passthrough 项。
 - **测试覆盖**:core 单测扩展 JPEG/PNG/WebP metadata 默认剥离/开启保留断言,并新增 PNG 源跨 JPEG/PNG/WebP 的 XMP 保留测试。
 
 验证:
@@ -754,7 +1214,7 @@ Codex 完成 P1「导入阶段尺寸/DPI ping」的第一版可运行闭环:
 限制:
 
 - 当前只做导入元数据 ping,尚未生成缩略图。
-- DPI 只覆盖 PNG `pHYs` 与 JPEG JFIF density;EXIF Resolution 标签、WebP/AVIF 容器级 DPI 后续随元数据保留一起扩展。
+- DPI 当前覆盖 PNG `pHYs`、JPEG JFIF density 与 JPEG EXIF Resolution;WebP/AVIF 容器级 DPI 后续随元数据保留一起扩展。
 - Tauri 扫描阶段最多读取每个文件前 512 KiB;极端 JPEG/AVIF 若尺寸信息晚于该范围,会保守返回空 metadata,不影响导入。
 
 ## 2026-06-30 — P1 并发批量最小闭环

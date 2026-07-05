@@ -61,14 +61,15 @@
 
 - 插件仓库/包名建议:`imgconvert-heic-plugin`。许可证可用 `LGPL-3.0-or-later` 或与所用 libheif/libde265 组合兼容的 LGPL 版本。
 - 分发形态:独立 installer/压缩包/系统包;主程序只发现 manifest 与调用 helper。不能把 helper 当作主程序内置依赖,不能让 `cargo deny` 主依赖树出现 LGPL/GPL。
-- 商店形态:App Store/MS Store/Flathub 构建默认禁用外部 helper;当前 Flatpak manifest 已设置 `IMGCONVERT_DISABLE_EXTERNAL_CODECS=1` 且不捆绑 HEIC/helper。如未来某渠道允许插件/扩展,需按该渠道单独设计和审计。
+- 商店形态:App Store/MS Store/Flathub 构建默认禁用宿主外部 helper;当前 Flatpak manifest 已设置 `IMGCONVERT_DISABLE_EXTERNAL_CODECS=1` 且不捆绑 HEIC/helper。Flatpak 例外是单独 addon:`com.ivmm.imgconvert.Codecs.Heic` 作为独立 LGPL extension,安装在 `/app/extensions/codecs`,主包只读取该 extension manifest,不链接 LGPL 库。
 - 功能范围:只声明 `readable: ["heic","heif","hif"]`;`writable` 为空。HEIC 编码输出暂缓,避免 x265/GPL 与 HEVC 编码专利风险。
 - LGPL 义务:插件必须提供许可证全文、NOTICE/版权、对应源码或源码获取方式,并允许用户替换 LGPL 组件。若修改 libheif/libde265,需提供修改源码。
+- Flatpak HEIC extension 当前 repo 侧 manifest 固定 `libde265`/`libheif` 源码 tarball 与 sha256,关闭 HEIC encoding、`x265` 和 GPL-only codec 路径;真正提交 Flathub addon 前仍需复核上游许可证文本、源码可得性、专利/地区分发风险和 AppStream 文案。
 - 安全义务:主程序不得执行来自图片目录的同名 helper;只允许受信任安装目录或用户显式选择的 helper。调用必须避免 shell 拼接,防止路径/文件名注入。
 
 ## AV1 / AVIF 专利
 
-- AVIF(经 libavif + rav1e)基于 AV1,**AOMedia 提供免版税专利授权(AOM Patent License 1.0)**,含**防御性终止**条款(你用专利告人则授权失效)。业界普遍视为商用安全。
+- AVIF(经 libavif + rav1e/libaom)基于 AV1,**AOMedia 提供免版税专利授权(AOM Patent License 1.0)**,含**防御性终止**条款(你用专利告人则授权失效)。业界普遍视为商用安全。
 - 但**不为零**:可能存在非 AOMedia 成员的必要专利;Sisvel 曾运营 AV1 池(争议)。**需核实** 2025–2026 诉讼状态。
 - 文案表述:「AVIF 基于 AV1,采用开放生态编码器;不捆绑 HEVC 编码器」,**避免**写「无专利风险 / patent-free」。
 
@@ -76,7 +77,7 @@
 
 - **评审一致要求**:Apache-2.0 §4(d) 要保留 NOTICE;BSD 类要求二进制分发保留版权与免责声明;**`mozjpeg` 的 IJG 许可含命名条款**(不得以 IJG 名义背书)。
 - 商店/Flatpak 二进制里用户拿不到仓库文件 → **必须在 App 内做「开源许可」页**,内嵌 `THIRD_PARTY_LICENSES` 全文(IJG/BSD/Apache NOTICE 完整文本,非链接)。
-- `cargo-about` 生成后**人工复核**:确认 C 库(libwebp/libavif/rav1e/mozjpeg/dav1d,以及 **libavif 常拉的 libyuv(BSD-3)**)的 NOTICE/版权段被完整包含,而非只有 Rust crate 的 SPDX 摘要。`image`/`fast_image_resize` 的精确 SPDX(可能 MIT-only)同样以 cargo-about 输出为准。
+- `cargo-about` 生成后**人工复核**:确认 C 库(libwebp/libavif/rav1e/libaom/mozjpeg/dav1d,以及 **libavif 常拉的 libyuv(BSD-3)**)的 NOTICE/版权段被完整包含,而非只有 Rust crate 的 SPDX 摘要。`image`/`fast_image_resize` 的精确 SPDX(可能 MIT-only)同样以 cargo-about 输出为准。
 
 ## 第三方组件(均宽松,可静态链接上架)
 
@@ -86,7 +87,9 @@
 - `mozjpeg`(IJG/BSD,封装 MIT/Apache)—— JPEG
 - `oxipng`(MIT)—— PNG 无损
 - `webp`(MIT/Apache;libwebp BSD-3)—— WebP
-- `libavif-sys`(**BSD-2-Clause,待 cargo-about 实测确认**)+ libavif(BSD-2)+ rav1e(BSD-2)+ dav1d(BSD-2,解码)—— AVIF(采 DropWebP 路线,**取代裸 ravif**)
+- `libavif-sys`(**BSD-2-Clause,待 cargo-about 实测确认**)+ libavif(BSD-2)+ rav1e(BSD-2,有损编码)+ libaom(BSD,AVIF 真无损编码)+ dav1d(BSD-2,解码)—— AVIF(采 DropWebP 路线,**取代裸 ravif**)
+- `lcms2` / `lcms2-sys`(MIT;静态构建 LittleCMS)—— ICC 像素级色彩转换
+- `md-5` / RustCrypto digest crates(MIT/Apache)—— JPEG Extended XMP 32-byte digest id
 - `fast_image_resize`(MIT/Apache,**待核精确 SPDX**)—— 缩放
 - `ssimulacra2`(**BSD-2-Clause**,crates.io 实查确认)—— 质量判定
 - `color_quant`(MIT)—— 有损 PNG 量化(替代 imagequant)
@@ -96,6 +99,7 @@
 ## 合规自动化与审计范围
 
 - `src-tauri/deny.toml`(cargo-deny)**禁止 GPL/AGPL/LGPL**,只放行宽松许可;CI 自动运行 `pnpm run license:rust`。
+- `pnpm run architecture:check` 作为额外静态护栏,检查主包依赖名、关键 crate feature、HEIC read-only/主包不内置、store build 禁外部 helper、Flatpak 主包不捆绑 `libheif`/`x265`/helper 和文件访问授权抽象。它不能替代 `cargo deny`,但能防止常见架构红线被配置改动绕开。
 - RustSec advisory gate 有显式上游例外清单:`src-tauri/deny.toml` 与 `scripts/audit-rust-advisories.mjs` 必须同步。例外只覆盖当前 Tauri GTK3/WebKitGTK、Tauri `plist -> quick-xml` 配置解析链和 rav1e/libavif 构建链的已知 ID;不得用它放行新 codec 输入解析漏洞或新增 GPL/AGPL/LGPL 依赖。
 - `cargo-about`(`src-tauri/about.toml` 白名单 + 模板)**自动生成 Rust 许可全文**,通过 `pnpm run license:third-party` 跑。
 - npm 侧通过 `pnpm licenses list --json` 获取依赖元数据,再读取已安装包中的 `LICENSE` / `NOTICE` / `COPYING` 文件全文并纳入 `THIRD_PARTY_LICENSES.md`;`pnpm run license:verify` 校验生成物是否过期。

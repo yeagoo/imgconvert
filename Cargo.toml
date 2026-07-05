@@ -3,4 +3,4 @@
 [workspace]
 resolver = "2"
 members = ["crates/imgconvert-core"]
-exclude = ["src-tauri"]
+exclude = ["src-tauri", "fuzz"]

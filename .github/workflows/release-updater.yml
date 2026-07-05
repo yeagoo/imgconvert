@@ -1,0 +1,123 @@
+name: Updater Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build and publish, for example v0.1.0.
+        required: true
+        type: string
+      publish_release:
+        description: Upload updater assets to the GitHub Release.
+        required: true
+        default: false
+        type: boolean
+      draft_release:
+        description: Create the GitHub Release as draft when publishing.
+        required: true
+        default: true
+        type: boolean
+      prerelease:
+        description: Mark the GitHub Release as prerelease when publishing.
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: updater-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+  NODE_VERSION: "24"
+
+jobs:
+  linux-updater:
+    name: Linux AppImage Updater
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            meson \
+            nasm \
+            ninja-build \
+            file \
+            desktop-file-utils \
+            appstream \
+            squashfs-tools \
+            xvfb \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.4
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@1.96.0
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run release:platform:check
+      - name: Build signed updater AppImage
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_UPDATER_PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
+          TAURI_UPDATER_ENDPOINTS: '["https://github.com/${{ github.repository }}/releases/latest/download/latest.json"]'
+        run: pnpm run release:linux:updater
+      - name: Generate latest.json
+        env:
+          TAURI_UPDATER_ARTIFACT_BASE_URL: https://github.com/${{ github.repository }}/releases/download/${{ inputs.tag }}
+        run: pnpm run release:updater:manifest
+      - name: Verify latest.json
+        env:
+          TAURI_UPDATER_ARTIFACT_BASE_URL: https://github.com/${{ github.repository }}/releases/download/${{ inputs.tag }}
+        run: pnpm run release:updater:verify
+      - name: Updater AppImage runtime smoke
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          IMGCONVERT_PACKAGE_CONVERT_SMOKE: "1"
+        run: |
+          appimage="$(find src-tauri/target/release/bundle/appimage -maxdepth 1 -type f -name '*.AppImage' | head -n 1)"
+          test -n "$appimage"
+          chmod +x "$appimage"
+          "$appimage"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: imgconvert-updater-linux-${{ inputs.tag }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            target/updater/latest.json
+            src-tauri/target/release/bundle/appimage/*.AppImage
+            src-tauri/target/release/bundle/appimage/*.AppImage.sig
+            src-tauri/target/release/bundle/SHA256SUMS
+      - name: Publish GitHub Release assets
+        if: ${{ inputs.publish_release }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          draft: ${{ inputs.draft_release }}
+          prerelease: ${{ inputs.prerelease }}
+          fail_on_unmatched_files: true
+          files: |
+            target/updater/latest.json
+            src-tauri/target/release/bundle/appimage/*.AppImage
+            src-tauri/target/release/bundle/appimage/*.AppImage.sig
+            src-tauri/target/release/bundle/SHA256SUMS

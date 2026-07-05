@@ -6,7 +6,12 @@ on:
       docker_smoke:
         description: Run Docker install/runtime smoke matrix after building packages.
         required: true
-        default: true
+        default: false
+        type: boolean
+      build_arm64:
+        description: Include paid Linux arm64 runner in release build.
+        required: true
+        default: false
         type: boolean
 
 permissions:
@@ -29,11 +34,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - arch: amd64
-            runner: ubuntu-24.04
-          - arch: arm64
-            runner: ubuntu-24.04-arm
+        include: ${{ fromJSON(inputs.build_arm64 && '[{"arch":"amd64","runner":"ubuntu-24.04"},{"arch":"arm64","runner":"ubuntu-24.04-arm"}]' || '[{"arch":"amd64","runner":"ubuntu-24.04"}]') }}
     steps:
       - uses: actions/checkout@v4
       - run: |

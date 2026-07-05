@@ -10,6 +10,7 @@ const manifestPath = path.join(flatpakDir, "com.ivmm.imgconvert.yml");
 const desktopPath = path.join(flatpakDir, "com.ivmm.imgconvert.desktop");
 const metainfoPath = path.join(flatpakDir, "com.ivmm.imgconvert.metainfo.xml");
 const prepareScriptPath = path.join(repoRoot, "scripts", "prepare-flatpak-release.mjs");
+const heicExtensionDir = path.join(flatpakDir, "extensions", "heic");
 
 const failures = [];
 
@@ -24,6 +25,7 @@ if (failures.length === 0) {
   inspectDesktop(readFileSync(desktopPath, "utf8"));
   inspectMetainfo(readFileSync(metainfoPath, "utf8"));
   inspectPrepareScript(readFileSync(prepareScriptPath, "utf8"));
+  inspectHeicExtensionTemplate();
   inspectReadme();
 }
 
@@ -47,6 +49,22 @@ function inspectManifest(text) {
     "--env=IMGCONVERT_DISABLE_EXTERNAL_CODECS=1",
     "Flatpak main package must disable external codec helpers",
   );
+  requireText(
+    text,
+    "--env=IMGCONVERT_ALLOW_FLATPAK_CODEC_EXTENSIONS=1",
+    "Flatpak main package must allow only mounted codec extensions",
+  );
+  for (const expected of [
+    "add-extensions:",
+    "com.ivmm.imgconvert.Codecs:",
+    'version: "1"',
+    "directory: extensions/codecs",
+    "subdirectories: true",
+    "no-autodownload: true",
+    "mkdir -p ${FLATPAK_DEST}/extensions/codecs",
+  ]) {
+    requireText(text, expected, `manifest must define Flatpak codec extension point: ${expected}`);
+  }
   requireText(text, "type: archive", "manifest must use a generated release archive source");
   requireArchiveSource(text);
   if (/type:\s+dir/.test(text)) {
@@ -106,8 +124,63 @@ function inspectReadme() {
     "vendored Cargo/npm",
     "corepack.tgz",
     "IMGCONVERT_PACKAGE_CONVERT_SMOKE=1",
+    "IMGCONVERT_ALLOW_FLATPAK_CODEC_EXTENSIONS=1",
+    "com.ivmm.imgconvert.Codecs.Heic",
   ]) {
     requireText(readme, expected, `Flatpak README must document ${expected}`);
+  }
+}
+
+function inspectHeicExtensionTemplate() {
+  const manifestTemplatePath = path.join(
+    heicExtensionDir,
+    "com.ivmm.imgconvert.Codecs.Heic.template.yml",
+  );
+  const codecManifestPath = path.join(heicExtensionDir, "imgconvert-codec-heic.template.json");
+  const metainfoTemplatePath = path.join(
+    heicExtensionDir,
+    "com.ivmm.imgconvert.Codecs.Heic.metainfo.template.xml",
+  );
+  const readmePath = path.join(heicExtensionDir, "README.md");
+  for (const file of [manifestTemplatePath, codecManifestPath, metainfoTemplatePath, readmePath]) {
+    if (!existsSync(file)) {
+      failures.push(`missing ${path.relative(repoRoot, file)}`);
+    }
+  }
+  if (!existsSync(manifestTemplatePath) || !existsSync(codecManifestPath)) {
+    return;
+  }
+
+  const manifestTemplate = readFileSync(manifestTemplatePath, "utf8");
+  for (const expected of [
+    "id: com.ivmm.imgconvert.Codecs.Heic",
+    'branch: "1"',
+    "runtime: com.ivmm.imgconvert",
+    "build-extension: true",
+    "prefix: /app/extensions/codecs/heic",
+    "imgconvert-codec-heic.json",
+  ]) {
+    requireText(manifestTemplate, expected, `HEIC extension template missing ${expected}`);
+  }
+
+  const codecManifest = JSON.parse(readFileSync(codecManifestPath, "utf8"));
+  if (codecManifest.protocol !== 1) {
+    failures.push("HEIC extension codec manifest must use protocol 1");
+  }
+  if (!String(codecManifest.license ?? "").startsWith("LGPL-")) {
+    failures.push("HEIC extension codec manifest must declare separate LGPL licensing");
+  }
+  if (!Array.isArray(codecManifest.readable) || !codecManifest.readable.includes("heic")) {
+    failures.push("HEIC extension codec manifest must declare HEIC readable support");
+  }
+  if (Array.isArray(codecManifest.writable) && codecManifest.writable.length > 0) {
+    failures.push("HEIC extension codec manifest must stay decode-only");
+  }
+  if (codecManifest.decode?.kind !== "heic-to-png-file") {
+    failures.push("HEIC extension codec manifest must decode HEIC to PNG files");
+  }
+  if (!codecManifest.decode?.args?.includes("{metadata}")) {
+    failures.push("HEIC extension codec manifest should support metadata sidecar output");
   }
 }
 

@@ -11,6 +11,12 @@ node_modules
 dist
 dist-ssr
 target
+fuzz/Cargo.lock
+fuzz/corpus/*
+!fuzz/corpus/.gitignore
+!fuzz/corpus/README.md
+fuzz/target
+fuzz/artifacts
 .flatpak-builder
 test-results
 playwright-report

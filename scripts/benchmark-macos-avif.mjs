@@ -18,34 +18,27 @@ if (os.platform() !== "darwin" && !allowNonMacos) {
 
 const env = {
   ...process.env,
-  IMGCONVERT_AVIF_BENCHMARK: "1",
-  IMGCONVERT_AVIF_BENCHMARK_WIDTH: process.env.IMGCONVERT_AVIF_BENCHMARK_WIDTH ?? "1024",
-  IMGCONVERT_AVIF_BENCHMARK_HEIGHT: process.env.IMGCONVERT_AVIF_BENCHMARK_HEIGHT ?? "768",
-  IMGCONVERT_AVIF_BENCHMARK_ITERATIONS: process.env.IMGCONVERT_AVIF_BENCHMARK_ITERATIONS ?? "3",
-  IMGCONVERT_AVIF_BENCHMARK_SPEEDS: process.env.IMGCONVERT_AVIF_BENCHMARK_SPEEDS ?? "8,10",
+  IMGCONVERT_PLATFORM_BENCHMARK_WIDTH: process.env.IMGCONVERT_AVIF_BENCHMARK_WIDTH ?? "1024",
+  IMGCONVERT_PLATFORM_BENCHMARK_HEIGHT: process.env.IMGCONVERT_AVIF_BENCHMARK_HEIGHT ?? "768",
+  IMGCONVERT_PLATFORM_BENCHMARK_ITERATIONS: process.env.IMGCONVERT_AVIF_BENCHMARK_ITERATIONS ?? "3",
+  IMGCONVERT_PLATFORM_BENCHMARK_FORMATS: "avif",
+  IMGCONVERT_PLATFORM_BENCHMARK_AVIF_SPEEDS: process.env.IMGCONVERT_AVIF_BENCHMARK_SPEEDS ?? "8,10",
 };
 
-const commandArgs = [
-  "+1.96.0",
-  "run",
-  "--manifest-path",
-  "src-tauri/Cargo.toml",
-  "--bin",
-  "imgconvert",
-];
+const commandArgs = ["scripts/benchmark-platform.mjs"];
 
 console.log(
-  `running AVIF benchmark (${env.IMGCONVERT_AVIF_BENCHMARK_WIDTH}x${env.IMGCONVERT_AVIF_BENCHMARK_HEIGHT}, speeds ${env.IMGCONVERT_AVIF_BENCHMARK_SPEEDS})`,
+  `running AVIF benchmark (${env.IMGCONVERT_PLATFORM_BENCHMARK_WIDTH}x${env.IMGCONVERT_PLATFORM_BENCHMARK_HEIGHT}, speeds ${env.IMGCONVERT_PLATFORM_BENCHMARK_AVIF_SPEEDS})`,
 );
 
-const result = spawnSync("cargo", commandArgs, {
+const result = spawnSync(process.execPath, commandArgs, {
   cwd: repoRoot,
   env,
   stdio: "inherit",
 });
 
 if (result.error) {
-  console.error(`failed to start cargo: ${result.error.message}`);
+  console.error(`failed to start benchmark-platform: ${result.error.message}`);
   process.exit(1);
 }
 process.exit(result.status ?? 1);

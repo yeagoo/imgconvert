@@ -1,0 +1,14 @@
+{
+  "id": "imgconvert-heic-flatpak-extension",
+  "protocol": 1,
+  "license": "LGPL-3.0-or-later",
+  "readable": ["heic", "heif", "hif"],
+  "writable": [],
+  "mode": "external-process",
+  "decode": {
+    "kind": "heic-to-png-file",
+    "command": "bin/imgconvert-heic-helper",
+    "args": ["{input}", "{output}", "{metadata}"],
+    "output": "png"
+  }
+}

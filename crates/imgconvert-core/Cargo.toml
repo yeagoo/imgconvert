@@ -14,12 +14,16 @@ mozjpeg = "0.10"
 oxipng = { version = "9", default-features = false, features = ["parallel"] }
 # WebP 编解码(底层 libwebp,cc 构建)
 webp = "0.3"
-# AVIF:libavif 容器 + rav1e 编码(纯 Rust)+ dav1d 解码(meson/ninja 构建);
-# 采 DropWebP 路线,取代裸 ravif,以正确保留 ICC/nclx/alpha。arm64 无需 nasm。
-libavif-sys = { version = "0.17", default-features = false, features = ["codec-rav1e", "codec-dav1d"] }
+# AVIF:libavif 容器 + rav1e 有损编码 + aom 真无损编码 + dav1d 解码;
+# 采 DropWebP 路线,取代裸 ravif,以正确保留 ICC/nclx/alpha。x86 libaom/mozjpeg 需要 nasm。
+libavif-sys = { version = "0.17", default-features = false, features = ["codec-rav1e", "codec-aom", "codec-dav1d"] }
 # PNG iCCP metadata uses zlib compression; CRCs are needed for PNG chunk surgery.
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 crc32fast = "1"
+# Pixel-level ICC transforms. Static build keeps the desktop app independent from host lcms packages.
+lcms2 = { version = "6.1.1", default-features = false, features = ["static"] }
+# JPEG Extended XMP uses a 32-byte ASCII MD5 digest id in its marker packet.
+md-5 = "0.10"
 # 感知质量评分；关闭默认 rayon，避免和文件级并发叠加。
 ssimulacra2 = { version = "0.5.1", default-features = false }
 # 实验性 PNG 有损限色；MIT，替代 GPL imagequant。

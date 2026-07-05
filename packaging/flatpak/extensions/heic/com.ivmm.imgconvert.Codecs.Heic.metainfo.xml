@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: CC0-1.0 -->
+<component type="addon">
+  <id>com.ivmm.imgconvert.Codecs.Heic</id>
+  <extends>com.ivmm.imgconvert</extends>
+  <name>ImgConvert HEIC Import Extension</name>
+  <summary>Optional decode-only HEIC/HEIF import helper for ImgConvert</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>LGPL-3.0-or-later</project_license>
+  <description>
+    <p>
+      Adds optional HEIC/HEIF import through a process-isolated helper. The main
+      ImgConvert Flatpak does not bundle this codec and does not provide HEIC
+      output.
+    </p>
+    <p>
+      This extension builds libheif with libde265 for HEVC decoding. HEIC
+      encoding, x265, and other GPL-only codec paths are intentionally disabled.
+    </p>
+  </description>
+</component>

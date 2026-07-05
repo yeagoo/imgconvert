@@ -1,6 +1,6 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 <script lang="ts">
-  import { FolderOpen, ArrowsClockwise } from "phosphor-svelte";
+  import { FolderOpen, ArrowsClockwise, WarningCircle } from "phosphor-svelte";
   import * as Select from "$lib/components/ui/select";
   import { Slider } from "$lib/components/ui/slider";
   import { Switch } from "$lib/components/ui/switch";
@@ -11,6 +11,7 @@
     effectiveQualityFor,
     extOf,
     formatFromExt,
+    capabilities,
     isTauriRuntime,
     pickSystemPaths,
     persistSettings,
@@ -25,8 +26,48 @@
 
   let { variant = "bar" }: { variant?: "bar" | "panel" } = $props();
   let outputMessage = $state("");
+  let activeSwitchHelp = $state<SwitchHelpKey | null>(null);
   const busy = $derived(ui.converting || ui.importing);
   const isPanel = $derived(variant === "panel");
+
+  const switchHelp = {
+    lossless: {
+      label: "无损压缩",
+      description: "优先保持像素不损失；仅在目标格式支持时可用，文件体积不一定最小。",
+    },
+    skipIfLarger: {
+      label: "跳过变大输出",
+      description: "候选输出不小于源文件时不写入，避免转换后文件反而变大。",
+    },
+    multiCandidate: {
+      label: "多候选取最小",
+      description: "尝试多个等价编码候选，并写入体积最小的结果，耗时会略有增加。",
+    },
+    autoQuality: {
+      label: "自动质量",
+      description: "JPEG/WebP 会搜索达到目标评分的最低质量，尽量减少体积。",
+    },
+    generationLossProtection: {
+      label: "代际防护",
+      description: "有损源再次输出有损格式时要求足够体积收益，减少反复压缩造成的劣化。",
+    },
+    resultCache: {
+      label: "结果缓存",
+      description: "源文件与设置未变时复用已有输出，适合重复处理同一批文件。",
+    },
+    preserveMetadata: {
+      label: "保留元数据",
+      description: "尽量保留 ICC 色彩配置和 EXIF 元数据；部分格式或字段可能无法写回。",
+    },
+    convertToSrgb: {
+      label: "转为 sRGB",
+      description: "使用嵌入 ICC 转换像素到 sRGB，并移除旧 ICC，适合统一网页和通用查看器显示。",
+    },
+  } as const;
+
+  type SwitchHelpKey = keyof typeof switchHelp;
+
+  const activeSwitchHelpContent = $derived(activeSwitchHelp ? switchHelp[activeSwitchHelp] : null);
 
   function isString(value: string | null): value is string {
     return value !== null;
@@ -204,7 +245,58 @@
       persistSettings();
     }
   }
+
+  function toggleSwitchHelp(key: SwitchHelpKey) {
+    activeSwitchHelp = activeSwitchHelp === key ? null : key;
+  }
+
+  function updateSetting<T extends boolean>(setter: (checked: T) => void) {
+    return (checked: T) => {
+      setter(checked);
+      persistSettings();
+    };
+  }
 </script>
+
+{#snippet settingSwitch(
+  key: SwitchHelpKey,
+  label: string,
+  checked: boolean,
+  disabled: boolean,
+  onChange: (checked: boolean) => void,
+  muted = false,
+)}
+  <div
+    class={cn(
+      "grid min-h-[4.25rem] grid-cols-[minmax(0,1fr)_auto] items-start gap-x-2 gap-y-1 rounded-md border bg-background/70 px-2.5 py-2 transition-colors",
+      activeSwitchHelp === key
+        ? "border-primary/40 bg-primary/5"
+        : "border-border/80 hover:border-foreground/20 hover:bg-muted/45",
+      muted && "opacity-45",
+    )}
+  >
+    <span class="min-w-0 text-pretty text-sm font-medium leading-5">{label}</span>
+    <Button
+      variant="ghost"
+      size="icon"
+      class={cn(
+        "size-7 rounded-md text-muted-foreground hover:text-foreground",
+        activeSwitchHelp === key && "bg-background text-foreground",
+      )}
+      aria-label={`说明：${label}`}
+      aria-pressed={activeSwitchHelp === key}
+      onclick={() => toggleSwitchHelp(key)}
+    >
+      <WarningCircle size={15} weight={activeSwitchHelp === key ? "fill" : "duotone"} />
+    </Button>
+    <div class="col-span-2 flex items-center justify-between gap-3">
+      <span class="text-[11px] leading-none text-muted-foreground">
+        {checked ? "已开启" : "未开启"}
+      </span>
+      <Switch size="sm" aria-label={label} {checked} {disabled} onCheckedChange={onChange} />
+    </div>
+  </div>
+{/snippet}
 
 <section class={cn("rounded-lg border bg-card p-4", isPanel && "h-fit")}>
   <div
@@ -310,100 +402,97 @@
       />
     </div>
 
-    <div
-      class={cn(
-        "flex min-w-0 flex-wrap gap-x-5 gap-y-2",
-        isPanel ? "items-start border-t pt-3" : "items-center lg:col-span-3",
-      )}
-    >
-      <div class="flex items-center gap-2" class:opacity-40={!canLossless || busy}>
-        <Switch
-          bind:checked={settings.lossless}
-          disabled={!canLossless || busy}
-          onCheckedChange={persistSettings}
-        />
-        <Label class="text-sm">无损压缩</Label>
-      </div>
+    <div class={cn("min-w-0", isPanel ? "border-t pt-3" : "lg:col-span-3")}>
+      {#if activeSwitchHelpContent}
+        <div
+          class="mb-2 rounded-md border border-primary/15 bg-muted/55 px-3 py-2 text-xs leading-5 text-muted-foreground"
+        >
+          <span class="font-medium text-foreground">{activeSwitchHelpContent.label}</span>
+          <span>：{activeSwitchHelpContent.description}</span>
+        </div>
+      {/if}
 
-      <div
-        class="flex items-center gap-2"
-        class:opacity-40={busy}
-        title="候选输出不小于源文件时跳过"
-      >
-        <Switch
-          bind:checked={settings.skipIfLarger}
-          disabled={busy}
-          onCheckedChange={persistSettings}
-        />
-        <Label class="text-sm">跳过变大输出</Label>
-      </div>
-
-      <div
-        class="flex items-center gap-2"
-        class:opacity-40={busy}
-        title="尝试多个等价编码候选并写入最小结果"
-      >
-        <Switch
-          bind:checked={settings.multiCandidate}
-          disabled={busy}
-          onCheckedChange={persistSettings}
-        />
-        <Label class="text-sm">多候选取最小</Label>
-      </div>
-
-      <div
-        class="flex items-center gap-2"
-        class:opacity-40={!autoQualitySupported || busy}
-        title="JPEG/WebP 用 SSIMULACRA2 搜索达标的最低质量"
-      >
-        <Switch
-          checked={settings.autoQuality && autoQualitySupported}
-          disabled={!autoQualitySupported || busy}
-          onCheckedChange={(checked) => {
+      <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        {@render settingSwitch(
+          "lossless",
+          "无损压缩",
+          settings.lossless,
+          !canLossless || busy,
+          updateSetting((checked) => {
+            settings.lossless = checked;
+          }),
+          !canLossless || busy,
+        )}
+        {@render settingSwitch(
+          "skipIfLarger",
+          "跳过变大输出",
+          settings.skipIfLarger,
+          busy,
+          updateSetting((checked) => {
+            settings.skipIfLarger = checked;
+          }),
+          busy,
+        )}
+        {@render settingSwitch(
+          "multiCandidate",
+          "多候选取最小",
+          settings.multiCandidate,
+          busy,
+          updateSetting((checked) => {
+            settings.multiCandidate = checked;
+          }),
+          busy,
+        )}
+        {@render settingSwitch(
+          "autoQuality",
+          "自动质量",
+          settings.autoQuality && autoQualitySupported,
+          !autoQualitySupported || busy,
+          updateSetting((checked) => {
             settings.autoQuality = checked;
-            persistSettings();
-          }}
-        />
-        <Label class="text-sm">自动质量</Label>
-      </div>
-
-      <div
-        class="flex items-center gap-2"
-        class:opacity-40={busy}
-        title="有损源再次输出有损格式时要求足够体积收益"
-      >
-        <Switch
-          bind:checked={settings.generationLossProtection}
-          disabled={busy}
-          onCheckedChange={persistSettings}
-        />
-        <Label class="text-sm">代际防护</Label>
-      </div>
-
-      <div
-        class="flex items-center gap-2"
-        class:opacity-40={busy}
-        title="源文件与设置未变时复用已有输出"
-      >
-        <Switch
-          bind:checked={settings.resultCache}
-          disabled={busy}
-          onCheckedChange={persistSettings}
-        />
-        <Label class="text-sm">结果缓存</Label>
-      </div>
-
-      <div
-        class="flex items-center gap-2"
-        class:opacity-40={busy}
-        title="保留 ICC 色彩配置和 EXIF 元数据"
-      >
-        <Switch
-          bind:checked={settings.preserveMetadata}
-          disabled={busy}
-          onCheckedChange={persistSettings}
-        />
-        <Label class="text-sm">保留元数据</Label>
+          }),
+          !autoQualitySupported || busy,
+        )}
+        {@render settingSwitch(
+          "generationLossProtection",
+          "代际防护",
+          settings.generationLossProtection,
+          busy,
+          updateSetting((checked) => {
+            settings.generationLossProtection = checked;
+          }),
+          busy,
+        )}
+        {@render settingSwitch(
+          "resultCache",
+          "结果缓存",
+          settings.resultCache,
+          busy,
+          updateSetting((checked) => {
+            settings.resultCache = checked;
+          }),
+          busy,
+        )}
+        {@render settingSwitch(
+          "preserveMetadata",
+          "保留元数据",
+          settings.preserveMetadata,
+          busy,
+          updateSetting((checked) => {
+            settings.preserveMetadata = checked;
+          }),
+          busy,
+        )}
+        {@render settingSwitch(
+          "convertToSrgb",
+          "转为 sRGB",
+          settings.colorManagementPolicy === "convertToSrgb",
+          busy || !capabilities.colorPipeline.iccTransform,
+          updateSetting((checked) => {
+            settings.colorManagementPolicy = checked ? "convertToSrgb" : "preserve";
+          }),
+          busy || !capabilities.colorPipeline.iccTransform,
+        )}
       </div>
     </div>
 

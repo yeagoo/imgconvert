@@ -11,6 +11,8 @@ export default [
       ".svelte-kit/**",
       "dist/**",
       "node_modules/**",
+      "fuzz/target/**",
+      "fuzz/artifacts/**",
       "src-tauri/target/**",
       "target/**",
       "THIRD_PARTY_LICENSES.md",

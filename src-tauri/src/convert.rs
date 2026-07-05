@@ -13,11 +13,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use imgconvert_core::{
-    AutoQualityOptions, AvifSubsample, EncodeOptions, Format, LOSSLESS_FORMATS, READABLE_FORMATS,
-    WRITABLE_FORMATS,
+    AutoQualityOptions, AvifSubsample, ColorManagementPolicy, EncodeOptions, Format, RawMetadata,
+    LOSSLESS_FORMATS, READABLE_FORMATS, WRITABLE_FORMATS,
 };
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
@@ -31,6 +31,10 @@ const MAX_BATCH_CONCURRENCY: usize = 8;
 const BATCH_MEMORY_BUDGET_BYTES: u64 = 768 * 1024 * 1024;
 const UNKNOWN_JOB_MEMORY_BYTES: u64 = 128 * 1024 * 1024;
 const RGBA_WORKING_SET_MULTIPLIER: u64 = 3;
+const CONVERT_WALL_CLOCK_TIMEOUT_ENV: &str = "IMGCONVERT_CONVERT_TIMEOUT_SECONDS";
+const DEFAULT_CONVERT_WALL_CLOCK_TIMEOUT_SECONDS: u64 = 180;
+const MIN_CONVERT_WALL_CLOCK_TIMEOUT_SECONDS: u64 = 5;
+const MAX_CONVERT_WALL_CLOCK_TIMEOUT_SECONDS: u64 = 900;
 
 enum WriteMode {
     Replace,
@@ -42,6 +46,11 @@ struct IndexedConvertOptions {
     options: ConvertOptions,
 }
 
+struct SourceForCore {
+    bytes: Vec<u8>,
+    metadata_override: Option<RawMetadata>,
+}
+
 /// 前端启动时读取的进程内 core 能力矩阵。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -49,10 +58,21 @@ pub struct Capabilities {
     pub readable: Vec<&'static str>,
     pub writable: Vec<&'static str>,
     pub lossless: Vec<&'static str>,
+    pub color_pipeline: ColorPipelineCapability,
     /// 主程序不内置 HEIC；可选外部 provider 可在运行时启用 HEIC 导入。
     pub heic: bool,
     /// 可选外部 codec provider。主程序不链接这些 provider 的 codec 库。
     pub codec_providers: Vec<CodecProviderCapability>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColorPipelineCapability {
+    pub rgba8: bool,
+    pub rgba16: bool,
+    pub rgba_f32: bool,
+    pub linear_resize: bool,
+    pub icc_transform: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -76,6 +96,7 @@ pub struct RuntimeDiagnostics {
     pub rgba_working_set_multiplier: u64,
     pub avif_encoder_max_threads: i32,
     pub auto_quality_max_scoring_evaluations: usize,
+    pub convert_wall_clock_timeout_seconds: Option<u64>,
 }
 
 /// 单张图片的转换参数,由前端传入。
@@ -101,7 +122,7 @@ pub struct ConvertOptions {
     /// 有损质量下限 30-100;低于 30 视为禁用。旧前端缺字段时保持兼容。
     #[serde(default)]
     pub quality_floor: u8,
-    /// 是否无损(对支持的格式生效:webp/png)。
+    /// 是否无损(对支持的格式生效:png/webp/avif)。
     pub lossless: bool,
     /// JPEG 是否使用 progressive scan。
     #[serde(default = "default_jpeg_progressive")]
@@ -159,6 +180,9 @@ pub struct ConvertOptions {
     pub file_name_template: Option<String>,
     /// 元数据保留开关预留;core P2 才实现实际透传。
     pub preserve_metadata: Option<bool>,
+    /// 色彩管理策略:preserve | convertToSrgb。
+    #[serde(default)]
+    pub color_management_policy: Option<String>,
 }
 
 fn default_jpeg_progressive() -> bool {
@@ -366,6 +390,10 @@ pub fn runtime_diagnostics() -> RuntimeDiagnostics {
         rgba_working_set_multiplier: RGBA_WORKING_SET_MULTIPLIER,
         avif_encoder_max_threads: imgconvert_core::AVIF_ENCODER_MAX_THREADS,
         auto_quality_max_scoring_evaluations: imgconvert_core::AUTO_QUALITY_MAX_SCORING_EVALUATIONS,
+        convert_wall_clock_timeout_seconds: convert_wall_clock_timeout()
+            .ok()
+            .flatten()
+            .map(|timeout| timeout.as_secs()),
     }
 }
 
@@ -388,8 +416,20 @@ fn capabilities_with_heic_provider(
         readable,
         writable: format_ids(WRITABLE_FORMATS),
         lossless: format_ids(LOSSLESS_FORMATS),
+        color_pipeline: color_pipeline_capability(),
         heic: !codec_providers.is_empty(),
         codec_providers,
+    }
+}
+
+fn color_pipeline_capability() -> ColorPipelineCapability {
+    let caps = imgconvert_core::color_pipeline_capabilities();
+    ColorPipelineCapability {
+        rgba8: caps.rgba8,
+        rgba16: caps.rgba16,
+        rgba_f32: caps.rgba_f32,
+        linear_resize: caps.linear_resize,
+        icc_transform: caps.icc_transform,
     }
 }
 
@@ -688,19 +728,30 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertResult, String> {
     }
 
     let target = parse_format(&opts.format)?;
-    let source = read_source_for_core(input)?;
-    let source_format = Format::from_magic(&source);
-    let source_probe = imgconvert_core::probe(&source).ok();
+    let source_for_core = read_source_for_core(input)?;
+    let source = &source_for_core.bytes;
+    let metadata_override = source_for_core.metadata_override.as_ref();
+    let source_format = Format::from_magic(source);
+    let source_probe = imgconvert_core::probe(source).ok();
     let encode_options = encode_options_for(opts, target);
-    let cache_key = opts
-        .result_cache
-        .then(|| result_cache_key(opts, target, &encode_options, &source));
+    let color_policy = color_management_policy_for(opts)?;
+    let wall_clock_timeout = convert_wall_clock_timeout()?;
+    let cache_key = opts.result_cache.then(|| {
+        result_cache_key(
+            opts,
+            target,
+            &encode_options,
+            color_policy,
+            source,
+            metadata_override,
+        )
+    });
     if let Some(key) = cache_key.as_deref() {
         if let Some(out_size) = result_cache_hit(&out, key) {
             if let Some(message) = candidate_policy_error(
                 opts,
                 CandidatePolicyCheck {
-                    source: &source,
+                    source,
                     source_format,
                     target,
                     encode_options: &encode_options,
@@ -723,28 +774,47 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertResult, String> {
     }
     let encoded = if should_use_auto_quality(opts, target, &encode_options) {
         let candidates = encode_candidates_for(opts, target, encode_options);
-        imgconvert_core::convert_auto_quality(
-            &source,
+        convert_auto_quality_with_timeout(
+            source,
             target,
             &candidates,
-            &AutoQualityOptions {
+            AutoQualityOptions {
                 min_quality: auto_quality_min(opts.quality_floor, encode_options.quality),
                 target_score: opts.auto_quality_score.clamp(1.0, 100.0),
             },
+            metadata_override,
+            color_policy,
+            wall_clock_timeout,
         )
         .map(|result| result.bytes)
         .map_err(|e| e.to_string())?
     } else if opts.multi_candidate {
         let candidates = encode_option_candidates(encode_options, target);
-        imgconvert_core::convert_best_of(&source, target, &candidates).map_err(|e| e.to_string())?
+        convert_best_of_with_timeout(
+            source,
+            target,
+            &candidates,
+            metadata_override,
+            color_policy,
+            wall_clock_timeout,
+        )
+        .map_err(|e| e.to_string())?
     } else {
-        imgconvert_core::convert(&source, target, &encode_options).map_err(|e| e.to_string())?
+        convert_best_of_with_timeout(
+            source,
+            target,
+            &[encode_options],
+            metadata_override,
+            color_policy,
+            wall_clock_timeout,
+        )
+        .map_err(|e| e.to_string())?
     };
     let candidate_size = u64::try_from(encoded.len()).unwrap_or(u64::MAX);
     if let Some(message) = candidate_policy_error(
         opts,
         CandidatePolicyCheck {
-            source: &source,
+            source,
             source_format,
             target,
             encode_options: &encode_options,
@@ -782,6 +852,97 @@ pub fn convert(opts: &ConvertOptions) -> Result<ConvertResult, String> {
     })
 }
 
+fn convert_best_of_with_timeout(
+    source: &[u8],
+    target: Format,
+    candidates: &[EncodeOptions],
+    metadata_override: Option<&RawMetadata>,
+    color_policy: ColorManagementPolicy,
+    timeout: Option<Duration>,
+) -> imgconvert_core::Result<Vec<u8>> {
+    if let Some(timeout) = timeout {
+        imgconvert_core::convert_best_of_with_color_policy_timeout(
+            source,
+            target,
+            candidates,
+            metadata_override,
+            color_policy,
+            timeout,
+        )
+    } else {
+        imgconvert_core::convert_best_of_with_color_policy(
+            source,
+            target,
+            candidates,
+            metadata_override,
+            color_policy,
+        )
+    }
+}
+
+fn convert_auto_quality_with_timeout(
+    source: &[u8],
+    target: Format,
+    candidates: &[EncodeOptions],
+    auto: AutoQualityOptions,
+    metadata_override: Option<&RawMetadata>,
+    color_policy: ColorManagementPolicy,
+    timeout: Option<Duration>,
+) -> imgconvert_core::Result<imgconvert_core::AutoQualityResult> {
+    if let Some(timeout) = timeout {
+        imgconvert_core::convert_auto_quality_with_color_policy_timeout(
+            source,
+            target,
+            candidates,
+            &auto,
+            metadata_override,
+            color_policy,
+            timeout,
+        )
+    } else {
+        imgconvert_core::convert_auto_quality_with_color_policy(
+            source,
+            target,
+            candidates,
+            &auto,
+            metadata_override,
+            color_policy,
+        )
+    }
+}
+
+fn convert_wall_clock_timeout() -> Result<Option<Duration>, String> {
+    parse_convert_wall_clock_timeout(
+        std::env::var(CONVERT_WALL_CLOCK_TIMEOUT_ENV)
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn parse_convert_wall_clock_timeout(raw: Option<&str>) -> Result<Option<Duration>, String> {
+    let Some(raw) = raw else {
+        return Ok(Some(Duration::from_secs(
+            DEFAULT_CONVERT_WALL_CLOCK_TIMEOUT_SECONDS,
+        )));
+    };
+    let trimmed = raw.trim();
+    if trimmed.eq_ignore_ascii_case("off")
+        || trimmed.eq_ignore_ascii_case("disabled")
+        || trimmed.eq_ignore_ascii_case("none")
+        || trimmed == "0"
+    {
+        return Ok(None);
+    }
+    let seconds = trimmed
+        .parse::<u64>()
+        .map_err(|error| format!("{CONVERT_WALL_CLOCK_TIMEOUT_ENV} 必须是秒数或 off: {error}"))?;
+    let seconds = seconds.clamp(
+        MIN_CONVERT_WALL_CLOCK_TIMEOUT_SECONDS,
+        MAX_CONVERT_WALL_CLOCK_TIMEOUT_SECONDS,
+    );
+    Ok(Some(Duration::from_secs(seconds)))
+}
+
 fn encode_options_for(opts: &ConvertOptions, target: Format) -> EncodeOptions {
     let lossless = opts.lossless && target.supports_lossless();
     EncodeOptions {
@@ -805,6 +966,27 @@ fn parse_avif_subsample(value: &str) -> AvifSubsample {
     match value.to_ascii_lowercase().as_str() {
         "yuv420" | "420" | "4:2:0" => AvifSubsample::Yuv420,
         _ => AvifSubsample::Yuv444,
+    }
+}
+
+fn color_management_policy_for(opts: &ConvertOptions) -> Result<ColorManagementPolicy, String> {
+    match opts
+        .color_management_policy
+        .as_deref()
+        .unwrap_or("preserve")
+    {
+        "preserve" | "preserveEmbeddedProfile" | "preserve-embedded-profile" => {
+            Ok(ColorManagementPolicy::PreserveEmbeddedProfile)
+        }
+        "convertToSrgb" | "convert-to-srgb" | "srgb" => Ok(ColorManagementPolicy::ConvertToSrgb),
+        other => Err(format!("不支持的色彩管理策略: {other}")),
+    }
+}
+
+fn color_management_policy_id(policy: ColorManagementPolicy) -> &'static [u8] {
+    match policy {
+        ColorManagementPolicy::PreserveEmbeddedProfile => b"preserve",
+        ColorManagementPolicy::ConvertToSrgb => b"convertToSrgb",
     }
 }
 
@@ -886,11 +1068,20 @@ fn push_unique_candidate(candidates: &mut Vec<EncodeOptions>, candidate: EncodeO
     }
 }
 
-fn read_source_for_core(input: &Path) -> Result<Vec<u8>, String> {
+fn read_source_for_core(input: &Path) -> Result<SourceForCore, String> {
     if external_codecs::is_heic_path(input) {
-        return external_codecs::decode_heic_to_png(input);
+        let decoded = external_codecs::decode_heic(input)?;
+        return Ok(SourceForCore {
+            bytes: decoded.image_bytes,
+            metadata_override: decoded.metadata,
+        });
     }
-    fs::read(input).map_err(|e| format!("无法读取输入文件 {}: {e}", input.display()))
+    let bytes =
+        fs::read(input).map_err(|e| format!("无法读取输入文件 {}: {e}", input.display()))?;
+    Ok(SourceForCore {
+        bytes,
+        metadata_override: None,
+    })
 }
 
 pub fn path_conversion_smoke_options(
@@ -928,6 +1119,7 @@ pub fn path_conversion_smoke_options(
         overwrite_mode: Some("overwrite".to_string()),
         file_name_template: Some("%name%-imgconvert-smoke".to_string()),
         preserve_metadata: Some(false),
+        color_management_policy: None,
     }
 }
 
@@ -1417,7 +1609,8 @@ fn webp_source_is_lossy(source: &[u8]) -> bool {
 }
 
 fn is_lossy_target(target: Format, encode_options: &EncodeOptions) -> bool {
-    matches!(target, Format::Jpeg | Format::Avif)
+    matches!(target, Format::Jpeg)
+        || (target == Format::Avif && !encode_options.lossless)
         || (target == Format::WebP && !encode_options.lossless)
 }
 
@@ -1467,13 +1660,16 @@ fn result_cache_key(
     opts: &ConvertOptions,
     target: Format,
     encode_options: &EncodeOptions,
+    color_policy: ColorManagementPolicy,
     source: &[u8],
+    metadata_override: Option<&RawMetadata>,
 ) -> String {
     let source_hash = blake3::hash(source);
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"imgconvert-result-cache-v2\0");
+    hasher.update(b"imgconvert-result-cache-v4\0");
     hasher.update(source_hash.as_bytes());
     hasher.update(target.id().as_bytes());
+    hasher.update(color_management_policy_id(color_policy));
     hasher.update(&[encode_options.quality]);
     hasher.update(&[u8::from(encode_options.lossless)]);
     hasher.update(&[u8::from(encode_options.jpeg_progressive)]);
@@ -1496,7 +1692,35 @@ fn result_cache_key(
     if should_use_auto_quality(opts, target, encode_options) {
         hasher.update(&[auto_quality_min(opts.quality_floor, encode_options.quality)]);
     }
+    if encode_options.preserve_metadata || color_policy == ColorManagementPolicy::ConvertToSrgb {
+        hash_metadata_override(&mut hasher, metadata_override);
+    }
     hasher.finalize().to_hex().to_string()
+}
+
+fn hash_metadata_override(hasher: &mut blake3::Hasher, metadata: Option<&RawMetadata>) {
+    let Some(metadata) = metadata else {
+        hasher.update(b"metadata:none\0");
+        return;
+    };
+    hasher.update(b"metadata:some\0");
+    hash_optional_metadata_blob(hasher, b"icc", metadata.icc.as_deref());
+    hash_optional_metadata_blob(hasher, b"exif", metadata.exif.as_deref());
+    hash_optional_metadata_blob(hasher, b"xmp", metadata.xmp.as_deref());
+    hash_optional_metadata_blob(hasher, b"iptc", metadata.iptc.as_deref());
+}
+
+fn hash_optional_metadata_blob(hasher: &mut blake3::Hasher, label: &[u8], bytes: Option<&[u8]>) {
+    hasher.update(label);
+    hasher.update(b"\0");
+    if let Some(bytes) = bytes {
+        hasher.update(b"1");
+        hasher.update(&bytes.len().to_le_bytes());
+        hasher.update(bytes);
+    } else {
+        hasher.update(b"0");
+    }
+    hasher.update(b"\0");
 }
 
 fn result_cache_hit(out: &Path, key: &str) -> Option<u64> {
@@ -1722,6 +1946,7 @@ mod tests {
             overwrite_mode: Some("skip".to_string()),
             file_name_template: Some("%name%".to_string()),
             preserve_metadata: Some(false),
+            color_management_policy: None,
         }
     }
 
@@ -1807,6 +2032,36 @@ mod tests {
     }
 
     #[test]
+    fn convert_writes_avif_lossless_when_requested() {
+        let dir = unique_test_dir("avif-lossless-output");
+        let out_dir = dir.join("out");
+        fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("sample.png");
+        let source = one_by_one_png();
+        fs::write(&input, &source).unwrap();
+
+        let mut options = test_convert_options(input.to_string_lossy().to_string());
+        options.out_dir = Some(out_dir.to_string_lossy().to_string());
+        options.format = "avif".to_string();
+        options.lossless = true;
+        options.generation_loss_protection = true;
+
+        let result = convert(&options).unwrap();
+        let encoded = fs::read(&result.output).unwrap();
+        assert_eq!(Format::from_magic(&encoded), Some(Format::Avif));
+
+        let source_pixels = imgconvert_core::codec_for(Format::Png)
+            .decode(&source)
+            .unwrap();
+        let decoded = imgconvert_core::codec_for(Format::Avif)
+            .decode(&encoded)
+            .unwrap();
+        assert_eq!(decoded.rgba8().unwrap(), source_pixels.rgba8().unwrap());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn capabilities_add_heic_as_read_only_when_helper_exists() {
         let capabilities =
             capabilities_with_heic_provider(Some(external_codecs::CodecProviderInfo {
@@ -1859,6 +2114,11 @@ mod tests {
 
         let jpeg = encode_options_for(&options, Format::Jpeg);
         assert!(!jpeg.lossless);
+
+        let avif = encode_options_for(&options, Format::Avif);
+        assert!(avif.lossless);
+        assert_eq!(avif.quality, 100);
+        assert_eq!(avif.avif_subsample, AvifSubsample::Yuv420);
     }
 
     #[test]
@@ -1882,6 +2142,10 @@ mod tests {
         let lossless_webp = encode_options_for(&options, Format::WebP);
         assert_eq!(lossless_webp.quality, 12);
         assert!(lossless_webp.lossless);
+
+        let lossless_avif = encode_options_for(&options, Format::Avif);
+        assert_eq!(lossless_avif.quality, 12);
+        assert!(lossless_avif.lossless);
 
         let png = encode_options_for(&options, Format::Png);
         assert_eq!(png.quality, 12);
@@ -1950,6 +2214,38 @@ mod tests {
     }
 
     #[test]
+    fn convert_wall_clock_timeout_parser_handles_defaults_disable_and_clamp() {
+        assert_eq!(
+            parse_convert_wall_clock_timeout(None)
+                .unwrap()
+                .unwrap()
+                .as_secs(),
+            DEFAULT_CONVERT_WALL_CLOCK_TIMEOUT_SECONDS
+        );
+        assert!(parse_convert_wall_clock_timeout(Some("0"))
+            .unwrap()
+            .is_none());
+        assert!(parse_convert_wall_clock_timeout(Some("off"))
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            parse_convert_wall_clock_timeout(Some("1"))
+                .unwrap()
+                .unwrap()
+                .as_secs(),
+            MIN_CONVERT_WALL_CLOCK_TIMEOUT_SECONDS
+        );
+        assert_eq!(
+            parse_convert_wall_clock_timeout(Some("99999"))
+                .unwrap()
+                .unwrap()
+                .as_secs(),
+            MAX_CONVERT_WALL_CLOCK_TIMEOUT_SECONDS
+        );
+        assert!(parse_convert_wall_clock_timeout(Some("bad")).is_err());
+    }
+
+    #[test]
     fn generation_loss_protection_uses_bpp_tiered_savings() {
         let mut options = test_convert_options("/tmp/input.jpg".to_string());
         options.generation_loss_protection = true;
@@ -1991,6 +2287,22 @@ mod tests {
                 candidate_size: 57_500,
             },
         ));
+
+        options.lossless = true;
+        let lossless_avif = encode_options_for(&options, Format::Avif);
+        assert!(lossless_avif.lossless);
+        assert!(!should_skip_generation_loss(
+            &options,
+            GenerationLossCheck {
+                source: &[0xff, 0xd8, 0xff],
+                source_format: Some(Format::Jpeg),
+                target: Format::Avif,
+                encode_options: &lossless_avif,
+                dimensions: Some((1000, 1000)),
+                source_size: 60_000,
+                candidate_size: 59_500,
+            },
+        ));
     }
 
     #[test]
@@ -1999,11 +2311,32 @@ mod tests {
         options.result_cache = true;
         let encode = encode_options_for(&options, Format::Jpeg);
 
-        let key_a = result_cache_key(&options, Format::Jpeg, &encode, b"source-a");
-        let key_b = result_cache_key(&options, Format::Jpeg, &encode, b"source-b");
+        let key_a = result_cache_key(
+            &options,
+            Format::Jpeg,
+            &encode,
+            ColorManagementPolicy::PreserveEmbeddedProfile,
+            b"source-a",
+            None,
+        );
+        let key_b = result_cache_key(
+            &options,
+            Format::Jpeg,
+            &encode,
+            ColorManagementPolicy::PreserveEmbeddedProfile,
+            b"source-b",
+            None,
+        );
         options.quality = 70;
         let changed_encode = encode_options_for(&options, Format::Jpeg);
-        let key_c = result_cache_key(&options, Format::Jpeg, &changed_encode, b"source-a");
+        let key_c = result_cache_key(
+            &options,
+            Format::Jpeg,
+            &changed_encode,
+            ColorManagementPolicy::PreserveEmbeddedProfile,
+            b"source-a",
+            None,
+        );
 
         assert_eq!(key_a.len(), 64);
         assert_ne!(key_a, key_b);
@@ -2018,14 +2351,122 @@ mod tests {
         options.quality = 80;
         options.quality_floor = 30;
         let low_floor = encode_options_for(&options, Format::Jpeg);
-        let key_low_floor = result_cache_key(&options, Format::Jpeg, &low_floor, b"source-a");
+        let key_low_floor = result_cache_key(
+            &options,
+            Format::Jpeg,
+            &low_floor,
+            ColorManagementPolicy::PreserveEmbeddedProfile,
+            b"source-a",
+            None,
+        );
 
         options.quality_floor = 70;
         let high_floor = encode_options_for(&options, Format::Jpeg);
-        let key_high_floor = result_cache_key(&options, Format::Jpeg, &high_floor, b"source-a");
+        let key_high_floor = result_cache_key(
+            &options,
+            Format::Jpeg,
+            &high_floor,
+            ColorManagementPolicy::PreserveEmbeddedProfile,
+            b"source-a",
+            None,
+        );
 
         assert_eq!(low_floor.quality, high_floor.quality);
         assert_ne!(key_low_floor, key_high_floor);
+    }
+
+    #[test]
+    fn result_cache_key_includes_metadata_override_when_preserved() {
+        let mut options = test_convert_options("/tmp/input.png".to_string());
+        options.result_cache = true;
+        options.preserve_metadata = Some(true);
+        let encode = encode_options_for(&options, Format::Png);
+        let metadata_a = RawMetadata {
+            icc: Some(b"ICC-A".to_vec()),
+            exif: None,
+            xmp: None,
+            iptc: None,
+        };
+        let metadata_b = RawMetadata {
+            icc: Some(b"ICC-B".to_vec()),
+            exif: None,
+            xmp: None,
+            iptc: None,
+        };
+
+        let key_a = result_cache_key(
+            &options,
+            Format::Png,
+            &encode,
+            ColorManagementPolicy::PreserveEmbeddedProfile,
+            b"source-a",
+            Some(&metadata_a),
+        );
+        let key_b = result_cache_key(
+            &options,
+            Format::Png,
+            &encode,
+            ColorManagementPolicy::PreserveEmbeddedProfile,
+            b"source-a",
+            Some(&metadata_b),
+        );
+
+        assert_ne!(key_a, key_b);
+    }
+
+    #[test]
+    fn result_cache_key_includes_color_policy_and_transform_metadata() {
+        let mut options = test_convert_options("/tmp/input.png".to_string());
+        options.result_cache = true;
+        let encode = encode_options_for(&options, Format::Png);
+        let metadata_a = RawMetadata {
+            icc: Some(b"ICC-A".to_vec()),
+            exif: None,
+            xmp: None,
+            iptc: None,
+        };
+        let metadata_b = RawMetadata {
+            icc: Some(b"ICC-B".to_vec()),
+            exif: None,
+            xmp: None,
+            iptc: None,
+        };
+
+        let preserve_key = result_cache_key(
+            &options,
+            Format::Png,
+            &encode,
+            ColorManagementPolicy::PreserveEmbeddedProfile,
+            b"source-a",
+            Some(&metadata_a),
+        );
+        let srgb_key_a = result_cache_key(
+            &options,
+            Format::Png,
+            &encode,
+            ColorManagementPolicy::ConvertToSrgb,
+            b"source-a",
+            Some(&metadata_a),
+        );
+        let srgb_key_b = result_cache_key(
+            &options,
+            Format::Png,
+            &encode,
+            ColorManagementPolicy::ConvertToSrgb,
+            b"source-a",
+            Some(&metadata_b),
+        );
+
+        assert_ne!(preserve_key, srgb_key_a);
+        assert_ne!(srgb_key_a, srgb_key_b);
+
+        options.color_management_policy = Some("convertToSrgb".to_string());
+        assert_eq!(
+            color_management_policy_for(&options).unwrap(),
+            ColorManagementPolicy::ConvertToSrgb
+        );
+        options.color_management_policy = Some("bad".to_string());
+        assert!(color_management_policy_for(&options).is_err());
     }
 
     #[test]
@@ -2172,6 +2613,7 @@ mod tests {
             overwrite_mode: Some("skip".to_string()),
             file_name_template: Some("%name%".to_string()),
             preserve_metadata: Some(false),
+            color_management_policy: None,
         };
         let progress = Channel::<BatchProgressEvent>::new(|_| Ok(()));
         let summary =
@@ -2277,6 +2719,7 @@ mod tests {
             overwrite_mode: Some("ask".to_string()),
             file_name_template: Some("%name%".to_string()),
             preserve_metadata: Some(false),
+            color_management_policy: None,
         };
 
         let plan = conversion_plan(&[options]);
@@ -2331,6 +2774,7 @@ mod tests {
             overwrite_mode: Some("skip".to_string()),
             file_name_template: Some("%name%".to_string()),
             preserve_metadata: Some(false),
+            color_management_policy: None,
         };
 
         let output = output_path(&options).unwrap();
@@ -2375,6 +2819,7 @@ mod tests {
             overwrite_mode: Some("skip".to_string()),
             file_name_template: Some("%name%".to_string()),
             preserve_metadata: Some(false),
+            color_management_policy: None,
         };
 
         let err = output_path(&options).unwrap_err();
@@ -2424,6 +2869,7 @@ mod tests {
                 overwrite_mode: Some("skip".to_string()),
                 file_name_template: Some("%name%".to_string()),
                 preserve_metadata: Some(false),
+                color_management_policy: None,
             })
             .collect();
         let progress = Channel::<BatchProgressEvent>::new(|_| Ok(()));
@@ -2484,6 +2930,7 @@ mod tests {
                 overwrite_mode: Some("overwrite".to_string()),
                 file_name_template: Some("%name%".to_string()),
                 preserve_metadata: Some(false),
+                color_management_policy: None,
             })
             .collect();
         let progress = Channel::<BatchProgressEvent>::new(|_| Ok(()));
@@ -2539,6 +2986,7 @@ mod tests {
             overwrite_mode: Some("skip".to_string()),
             file_name_template: Some("%name%".to_string()),
             preserve_metadata: Some(false),
+            color_management_policy: None,
         };
 
         let result = convert(&options).unwrap();
@@ -2606,6 +3054,12 @@ mod tests {
             diagnostics.auto_quality_max_scoring_evaluations,
             imgconvert_core::AUTO_QUALITY_MAX_SCORING_EVALUATIONS
         );
+        if std::env::var_os(CONVERT_WALL_CLOCK_TIMEOUT_ENV).is_none() {
+            assert_eq!(
+                diagnostics.convert_wall_clock_timeout_seconds,
+                Some(DEFAULT_CONVERT_WALL_CLOCK_TIMEOUT_SECONDS)
+            );
+        }
     }
 
     #[test]
@@ -2674,6 +3128,7 @@ mod tests {
             overwrite_mode: Some("skip".to_string()),
             file_name_template: Some("%name%".to_string()),
             preserve_metadata: Some(false),
+            color_management_policy: None,
         };
         let token = CancellationToken::new();
         token.cancel();
@@ -2730,6 +3185,7 @@ mod tests {
             overwrite_mode: Some("skip".to_string()),
             file_name_template: Some("%name%".to_string()),
             preserve_metadata: Some(false),
+            color_management_policy: None,
         };
         let progress = Channel::<BatchProgressEvent>::new(|_| Ok(()));
         let summary =

@@ -1,15 +1,18 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 <script lang="ts">
-  import { Images, Sun, Moon, Desktop, Info, PuzzlePiece, Sparkle } from "phosphor-svelte";
+  import { Sun, Moon, Desktop, Info, PuzzlePiece, Sparkle, DownloadSimple } from "phosphor-svelte";
   import { Button } from "$lib/components/ui/button";
+  import appIconUrl from "$lib/assets/app-icon.png";
   import { settings, engine, applyTheme, persistSettings } from "$lib/state.svelte";
 
   let {
     onOpenLegal,
     onOpenPluginDiagnostics,
+    onOpenUpdates,
   }: {
     onOpenLegal: () => void;
     onOpenPluginDiagnostics: () => void;
+    onOpenUpdates: () => void;
   } = $props();
 
   const themeIcon = $derived(
@@ -35,7 +38,14 @@
 </script>
 
 <header class="flex min-w-0 items-center gap-3">
-  <Images size={26} class="shrink-0 text-primary" weight="duotone" />
+  <img
+    src={appIconUrl}
+    alt=""
+    class="size-9 shrink-0 rounded-[0.7rem] shadow-sm ring-1 ring-border/70"
+    width="36"
+    height="36"
+    aria-hidden="true"
+  />
   <h1 class="shrink-0 text-lg font-bold">ImgConvert</h1>
   <span
     class="min-w-0 flex-1 truncate text-xs {engine.ok ? 'text-emerald-600' : 'text-destructive'}"
@@ -61,6 +71,9 @@
     </Button>
     <Button variant="ghost" size="icon" title="插件诊断" onclick={onOpenPluginDiagnostics}>
       <PuzzlePiece weight="duotone" />
+    </Button>
+    <Button variant="ghost" size="icon" title="应用更新" onclick={onOpenUpdates}>
+      <DownloadSimple weight="duotone" />
     </Button>
     <Button variant="ghost" size="icon" title="开源许可" onclick={onOpenLegal}>
       <Info weight="duotone" />

@@ -17,6 +17,7 @@ use std::sync::{mpsc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use imgconvert_core::RawMetadata;
 use serde::{Deserialize, Serialize};
 
 #[cfg(target_os = "macos")]
@@ -30,15 +31,21 @@ const HEIC_DECODE_TIMEOUT: Duration = Duration::from_secs(120);
 const HEIC_HELPER_STDERR_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 pub(crate) const MAX_HEIC_DECODED_PNG_BYTES: usize = 512 * 1024 * 1024;
 const MAX_HEIC_HELPER_STDERR_BYTES: usize = 64 * 1024;
+const MAX_HEIC_METADATA_SIDECAR_BYTES: usize = 64 * 1024;
+const MAX_HEIC_METADATA_BLOB_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PLUGIN_MANIFEST_BYTES: usize = 64 * 1024;
 const PLUGIN_DIRS_ENV: &str = "IMGCONVERT_CODEC_PLUGIN_DIRS";
 const DISABLE_EXTERNAL_CODECS_ENV: &str = "IMGCONVERT_DISABLE_EXTERNAL_CODECS";
+const ALLOW_FLATPAK_CODEC_EXTENSIONS_ENV: &str = "IMGCONVERT_ALLOW_FLATPAK_CODEC_EXTENSIONS";
+const FLATPAK_CODEC_EXTENSION_DIR_ENV: &str = "IMGCONVERT_FLATPAK_CODEC_EXTENSION_DIR";
+const FLATPAK_CODEC_EXTENSION_DIR_DEFAULT: &str = "/app/extensions/codecs";
 const HEIC_MANIFEST_NAME: &str = "imgconvert-codec-heic.json";
 const PLUGIN_PROTOCOL_VERSION: u32 = 1;
 const PLUGIN_MODE_EXTERNAL_PROCESS: &str = "external-process";
 const PLUGIN_DECODE_KIND_HEIC_TO_PNG: &str = "heic-to-png-file";
 const ARG_INPUT: &str = "{input}";
 const ARG_OUTPUT: &str = "{output}";
+const ARG_METADATA: &str = "{metadata}";
 
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 static SELECTED_HEIC_HELPER: Mutex<Option<PathBuf>> = Mutex::new(None);
@@ -70,6 +77,12 @@ pub struct CodecProviderInfo {
     pub license: Option<String>,
     pub readable: Vec<String>,
     pub writable: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DecodedExternalImage {
+    pub image_bytes: Vec<u8>,
+    pub metadata: Option<RawMetadata>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -184,6 +197,16 @@ struct ManifestDecode {
     output: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MetadataSidecar {
+    version: u32,
+    icc: Option<String>,
+    exif: Option<String>,
+    xmp: Option<String>,
+    iptc: Option<String>,
+}
+
 struct WorkDir {
     path: PathBuf,
 }
@@ -224,12 +247,20 @@ pub fn codec_diagnostics() -> CodecDiagnostics {
     } else {
         find_heic_helper()
     };
-    let disabled_reason = external_codec_discovery_disabled_reason();
+    let flatpak_extensions_enabled = flatpak_codec_extensions_enabled();
+    let raw_disabled_reason = external_codec_discovery_disabled_reason();
+    let disabled_reason = raw_disabled_reason.clone().map(|reason| {
+        if flatpak_extensions_enabled {
+            format!("{reason}; Flatpak codec extension 挂载点仍启用")
+        } else {
+            reason
+        }
+    });
     CodecDiagnostics {
         heic: HeicCodecDiagnostics {
             enabled: active_system_provider.is_some() || active_helper.is_some(),
-            external_codecs_enabled: disabled_reason.is_none()
-                && external_codec_discovery_supported(),
+            external_codecs_enabled: external_codec_discovery_supported()
+                && (raw_disabled_reason.is_none() || flatpak_extensions_enabled),
             disabled_reason,
             extensions: HEIC_EXTENSIONS.to_vec(),
             active_provider: active_system_provider
@@ -265,14 +296,21 @@ pub fn is_heic_magic(bytes: &[u8]) -> bool {
     })
 }
 
-pub fn decode_heic_to_png(input: &Path) -> Result<Vec<u8>, String> {
+pub fn decode_heic(input: &Path) -> Result<DecodedExternalImage, String> {
     if system_heic_available() {
-        return system_decode_heic_to_png(input);
+        return system_decode_heic_to_png(input).map(|image_bytes| DecodedExternalImage {
+            image_bytes,
+            metadata: None,
+        });
     }
     let helper = find_heic_helper().ok_or_else(|| {
         "未检测到 HEIC 解码能力。macOS 使用系统 ImageIO; Linux 可安装 libheif-examples; Fedora 的 HEVC HEIC 可能还需要 RPM Fusion libheif-freeworld。".to_string()
     })?;
     decode_heic_to_png_with_helper(input, &helper)
+}
+
+pub fn decode_heic_to_png(input: &Path) -> Result<Vec<u8>, String> {
+    decode_heic(input).map(|decoded| decoded.image_bytes)
 }
 
 #[cfg(target_os = "macos")]
@@ -470,20 +508,39 @@ impl Helper {
             args: self.args.clone(),
         }
     }
+
+    fn wants_metadata(&self) -> bool {
+        self.args.iter().any(|arg| arg == ARG_METADATA)
+    }
 }
 
-fn decode_heic_to_png_with_helper(input: &Path, helper: &Helper) -> Result<Vec<u8>, String> {
+fn decode_heic_to_png_with_helper(
+    input: &Path,
+    helper: &Helper,
+) -> Result<DecodedExternalImage, String> {
     validate_heic_header(input)?;
     let workdir = WorkDir::new()?;
     let output = workdir.path.join("decoded.png");
+    let metadata_output = helper
+        .wants_metadata()
+        .then(|| workdir.path.join("metadata.json"));
 
-    let stderr = run_decode_helper(helper, input, &output)?;
-    read_decoded_png(&workdir.path, &output).map_err(|error| {
+    let stderr = run_decode_helper(helper, input, &output, metadata_output.as_deref())?;
+    let image_bytes = read_decoded_png(&workdir.path, &output).map_err(|error| {
         if stderr.trim().is_empty() {
             error
         } else {
             format!("{error}; helper 输出: {}", stderr.trim())
         }
+    })?;
+    let metadata = if let Some(path) = metadata_output.as_deref() {
+        read_metadata_sidecar(&workdir.path, path)?
+    } else {
+        None
+    };
+    Ok(DecodedExternalImage {
+        image_bytes,
+        metadata,
     })
 }
 
@@ -567,9 +624,11 @@ fn validate_heic_header(input: &Path) -> Result<(), String> {
 }
 
 fn find_heic_helper() -> Option<Helper> {
-    if external_codec_discovery_disabled_reason().is_some() || !external_codec_discovery_supported()
-    {
+    if !external_codec_discovery_supported() {
         return None;
+    }
+    if external_codec_discovery_disabled_reason().is_some() {
+        return find_manifest_heic_helper_in_entries(flatpak_codec_extension_search_entries());
     }
     find_selected_heic_helper()
         .or_else(find_manifest_heic_helper)
@@ -669,7 +728,19 @@ fn find_manifest_heic_helper() -> Option<Helper> {
 }
 
 fn find_manifest_heic_helper_in_dirs(dirs: Vec<PathBuf>) -> Option<Helper> {
-    for dir in dirs {
+    find_manifest_heic_helper_in_entries(
+        dirs.into_iter()
+            .map(|path| PluginSearchDir {
+                source: "explicit",
+                path,
+            })
+            .collect(),
+    )
+}
+
+fn find_manifest_heic_helper_in_entries(entries: Vec<PluginSearchDir>) -> Option<Helper> {
+    for entry in entries {
+        let dir = entry.path;
         if !is_trusted_path_dir(&dir) {
             continue;
         }
@@ -714,6 +785,11 @@ fn plugin_search_dirs() -> Vec<PathBuf> {
 
 fn plugin_search_entries() -> Vec<PluginSearchDir> {
     let mut dirs = Vec::new();
+    let flatpak_extension_dirs = flatpak_codec_extension_search_entries();
+    if external_codec_discovery_disabled_reason().is_some() {
+        return flatpak_extension_dirs;
+    }
+
     if let Some(raw_dirs) = env::var_os(PLUGIN_DIRS_ENV) {
         dirs.extend(env::split_paths(&raw_dirs).map(|path| PluginSearchDir {
             source: PLUGIN_DIRS_ENV,
@@ -771,11 +847,21 @@ fn plugin_search_entries() -> Vec<PluginSearchDir> {
         });
     }
 
+    dirs.extend(flatpak_extension_dirs);
     dirs
 }
 
 fn manifest_dir_diagnostics() -> Vec<ManifestSearchDirDiagnostic> {
     if let Some(reason) = external_codec_discovery_disabled_reason() {
+        if flatpak_codec_extensions_enabled() {
+            let entries = plugin_search_entries();
+            if !entries.is_empty() {
+                return entries
+                    .into_iter()
+                    .map(|entry| manifest_dir_diagnostic(&entry))
+                    .collect();
+            }
+        }
         return vec![ManifestSearchDirDiagnostic {
             source: DISABLE_EXTERNAL_CODECS_ENV.to_string(),
             path: String::new(),
@@ -1241,7 +1327,10 @@ fn validate_manifest_args(args: &[String]) -> Result<Vec<String>, String> {
             has_input = true;
         } else if arg == ARG_OUTPUT {
             has_output = true;
-        } else if arg.contains(ARG_INPUT) || arg.contains(ARG_OUTPUT) {
+        } else if arg == ARG_METADATA {
+            // Optional metadata sidecar path. Presence is advertised by args alone.
+        } else if arg.contains(ARG_INPUT) || arg.contains(ARG_OUTPUT) || arg.contains(ARG_METADATA)
+        {
             return Err(
                 "HEIC_PLUGIN_ARGS_INVALID: placeholders must be standalone argv entries"
                     .to_string(),
@@ -1309,6 +1398,21 @@ fn external_codec_discovery_disabled_reason() -> Option<String> {
 }
 
 fn disable_external_codecs_value(value: Option<&str>) -> bool {
+    truthy_env_value(value)
+}
+
+fn flatpak_codec_extensions_enabled() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        truthy_env_value(env::var(ALLOW_FLATPAK_CODEC_EXTENSIONS_ENV).ok().as_deref())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
+fn truthy_env_value(value: Option<&str>) -> bool {
     value
         .map(|value| {
             matches!(
@@ -1317,6 +1421,46 @@ fn disable_external_codecs_value(value: Option<&str>) -> bool {
             )
         })
         .unwrap_or(false)
+}
+
+fn flatpak_codec_extension_search_entries() -> Vec<PluginSearchDir> {
+    if !flatpak_codec_extensions_enabled() {
+        return Vec::new();
+    }
+    flatpak_codec_extension_search_entries_for(flatpak_codec_extension_root())
+}
+
+#[cfg(target_os = "linux")]
+fn flatpak_codec_extension_root() -> PathBuf {
+    env::var_os(FLATPAK_CODEC_EXTENSION_DIR_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(FLATPAK_CODEC_EXTENSION_DIR_DEFAULT))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn flatpak_codec_extension_root() -> PathBuf {
+    PathBuf::from(FLATPAK_CODEC_EXTENSION_DIR_DEFAULT)
+}
+
+fn flatpak_codec_extension_search_entries_for(root: PathBuf) -> Vec<PluginSearchDir> {
+    let mut entries = vec![PluginSearchDir {
+        source: "flatpak-extension",
+        path: root.clone(),
+    }];
+
+    let Ok(children) = fs::read_dir(&root) else {
+        return entries;
+    };
+    let mut child_dirs = children
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.is_dir())
+        .collect::<Vec<_>>();
+    child_dirs.sort();
+    entries.extend(child_dirs.into_iter().map(|path| PluginSearchDir {
+        source: "flatpak-extension",
+        path,
+    }));
+    entries
 }
 
 #[cfg(target_os = "linux")]
@@ -1491,7 +1635,12 @@ fn has_execute_bit(_metadata: &fs::Metadata) -> bool {
     true
 }
 
-fn run_decode_helper(helper: &Helper, input: &Path, output: &Path) -> Result<String, String> {
+fn run_decode_helper(
+    helper: &Helper,
+    input: &Path,
+    output: &Path,
+    metadata_output: Option<&Path>,
+) -> Result<String, String> {
     let mut command = Command::new(&helper.path);
     for arg in &helper.args {
         match arg.as_str() {
@@ -1500,6 +1649,11 @@ fn run_decode_helper(helper: &Helper, input: &Path, output: &Path) -> Result<Str
             }
             ARG_OUTPUT => {
                 command.arg(output);
+            }
+            ARG_METADATA => {
+                let metadata_output = metadata_output
+                    .ok_or_else(|| "HEIC helper metadata sidecar path 未配置".to_string())?;
+                command.arg(metadata_output);
             }
             literal => {
                 command.arg(literal);
@@ -1594,6 +1748,55 @@ fn read_decoded_png(workdir: &Path, output: &Path) -> Result<Vec<u8>, String> {
         return Err(format!("HEIC helper 未生成 PNG 输出: {}", output.display()));
     };
     read_limited_file(first, MAX_HEIC_DECODED_PNG_BYTES)
+}
+
+fn read_metadata_sidecar(workdir: &Path, sidecar: &Path) -> Result<Option<RawMetadata>, String> {
+    if !sidecar.exists() {
+        return Ok(None);
+    }
+    let bytes = read_limited_file(sidecar, MAX_HEIC_METADATA_SIDECAR_BYTES)?;
+    let sidecar: MetadataSidecar = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("HEIC metadata sidecar JSON 解析失败: {error}"))?;
+    if sidecar.version != 1 {
+        return Err(format!(
+            "HEIC metadata sidecar protocol 不支持: {}",
+            sidecar.version
+        ));
+    }
+    let metadata = RawMetadata {
+        icc: read_sidecar_blob(workdir, sidecar.icc.as_deref())?,
+        exif: read_sidecar_blob(workdir, sidecar.exif.as_deref())?,
+        xmp: read_sidecar_blob(workdir, sidecar.xmp.as_deref())?,
+        iptc: read_sidecar_blob(workdir, sidecar.iptc.as_deref())?,
+    }
+    .normalized_orientation();
+    if metadata.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(metadata))
+    }
+}
+
+fn read_sidecar_blob(workdir: &Path, name: Option<&str>) -> Result<Option<Vec<u8>>, String> {
+    let Some(name) = name.filter(|name| !name.trim().is_empty()) else {
+        return Ok(None);
+    };
+    let path = sidecar_blob_path(workdir, name)?;
+    let bytes = read_limited_file(&path, MAX_HEIC_METADATA_BLOB_BYTES)?;
+    if bytes.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(bytes))
+    }
+}
+
+fn sidecar_blob_path(workdir: &Path, name: &str) -> Result<PathBuf, String> {
+    let path = Path::new(name);
+    let mut components = path.components();
+    if matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none() {
+        return Ok(workdir.join(path));
+    }
+    Err(format!("HEIC metadata sidecar 路径非法: {name}"))
 }
 
 fn read_limited_file(path: &Path, max_bytes: usize) -> Result<Vec<u8>, String> {
@@ -2094,7 +2297,8 @@ mod tests {
         let helper = Helper::system("heif-convert", helper_path);
         let decoded = decode_heic_to_png_with_helper(&input, &helper).unwrap();
 
-        assert!(decoded.starts_with(&[0x89, b'P', b'N', b'G']));
+        assert!(decoded.image_bytes.starts_with(&[0x89, b'P', b'N', b'G']));
+        assert!(decoded.metadata.is_none());
 
         fs::remove_dir_all(dir).unwrap();
     }
@@ -2160,7 +2364,119 @@ exit 7
             vec!["heic".to_string(), "heif".to_string(), "hif".to_string()]
         );
         assert!(info.writable.is_empty());
-        assert!(decoded.starts_with(&[0x89, b'P', b'N', b'G']));
+        assert!(decoded.image_bytes.starts_with(&[0x89, b'P', b'N', b'G']));
+        assert!(decoded.metadata.is_none());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn manifest_provider_reads_optional_metadata_sidecar() {
+        let dir = unique_manifest_test_dir("manifest-sidecar");
+        let bin = dir.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let helper_path = bin.join("heic-helper");
+        let fixture_path = helper_path.with_extension("png");
+        fs::write(&fixture_path, b"\x89PNG\r\n\x1a\nmanifest").unwrap();
+        fs::write(
+            &helper_path,
+            br#"#!/bin/sh
+cp "$0.png" "$3"
+workdir=$(dirname "$4")
+printf 'ICC-SIDECAR' > "$workdir/icc.bin"
+printf 'EXIF-SIDECAR' > "$workdir/exif.bin"
+printf '<rdf:Description tiff:Orientation="6"><dc:title>ok</dc:title></rdf:Description>' > "$workdir/xmp.bin"
+printf 'IPTC-SIDECAR' > "$workdir/iptc.bin"
+printf '{"version":1,"icc":"icc.bin","exif":"exif.bin","xmp":"xmp.bin","iptc":"iptc.bin"}' > "$4"
+"#,
+        )
+        .unwrap();
+        make_executable(&helper_path);
+        write_manifest(
+            &dir,
+            r#""decode":{"kind":"heic-to-png-file","command":"bin/heic-helper","args":["--decode","{input}","{output}","{metadata}"],"output":"png"}"#,
+            r#""writable":[]"#,
+            "LGPL-3.0-or-later",
+        );
+        let input = dir.join("sample.heic");
+        fs::write(&input, b"\0\0\0\x18ftypheic\0\0\0\0").unwrap();
+
+        let helper = find_manifest_heic_helper_in_dirs(vec![dir.clone()]).unwrap();
+        assert!(helper.wants_metadata());
+        let decoded = decode_heic_to_png_with_helper(&input, &helper).unwrap();
+        let metadata = decoded.metadata.unwrap();
+
+        assert!(decoded.image_bytes.starts_with(&[0x89, b'P', b'N', b'G']));
+        assert_eq!(metadata.icc, Some(b"ICC-SIDECAR".to_vec()));
+        assert_eq!(metadata.exif, Some(b"EXIF-SIDECAR".to_vec()));
+        assert_eq!(metadata.iptc, Some(b"IPTC-SIDECAR".to_vec()));
+        assert!(!String::from_utf8(metadata.xmp.unwrap())
+            .unwrap()
+            .contains("tiff:Orientation"));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn flatpak_extension_search_discovers_subdirectory_manifest() {
+        let root = unique_manifest_test_dir("flatpak-extension-root");
+        let extension_dir = root.join("heic");
+        let bin = extension_dir.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let helper_path = bin.join("heic-helper");
+        fs::write(&helper_path, b"#!/bin/sh\nexit 0\n").unwrap();
+        make_executable(&helper_path);
+        write_manifest(
+            &extension_dir,
+            r#""decode":{"kind":"heic-to-png-file","command":"bin/heic-helper","args":["{input}","{output}"],"output":"png"}"#,
+            r#""writable":[]"#,
+            "LGPL-3.0-or-later",
+        );
+
+        let helper = find_manifest_heic_helper_in_entries(
+            flatpak_codec_extension_search_entries_for(root.clone()),
+        )
+        .unwrap();
+        let info = helper.provider_info();
+
+        assert_eq!(info.kind, "manifest");
+        assert_eq!(info.id, "imgconvert-heic-helper");
+        assert_eq!(helper.path, fs::canonicalize(helper_path).unwrap());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(any(target_os = "linux", windows))]
+    #[test]
+    fn manifest_rejects_partial_metadata_placeholder() {
+        let args = vec![
+            ARG_INPUT.to_string(),
+            ARG_OUTPUT.to_string(),
+            format!("--metadata={ARG_METADATA}"),
+        ];
+        let err = validate_manifest_args(&args).unwrap_err();
+
+        assert!(err.contains("placeholders must be standalone"));
+    }
+
+    #[cfg(any(target_os = "linux", windows))]
+    #[test]
+    fn metadata_sidecar_rejects_nested_blob_paths() {
+        let dir = unique_test_dir("sidecar-path");
+        fs::create_dir_all(dir.join("nested")).unwrap();
+        let sidecar = dir.join("metadata.json");
+        fs::write(
+            &sidecar,
+            br#"{"version":1,"icc":"nested/icc.bin","exif":null,"xmp":null}"#,
+        )
+        .unwrap();
+        fs::write(dir.join("nested").join("icc.bin"), b"ICC").unwrap();
+
+        let err = read_metadata_sidecar(&dir, &sidecar).unwrap_err();
+
+        assert!(err.contains("HEIC metadata sidecar 路径非法"));
 
         fs::remove_dir_all(dir).unwrap();
     }

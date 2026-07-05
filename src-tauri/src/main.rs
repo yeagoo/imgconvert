@@ -19,9 +19,11 @@ fn main() {
         }
         return;
     }
-    if std::env::var_os("IMGCONVERT_AVIF_BENCHMARK").is_some() {
-        if let Err(error) = run_avif_benchmark() {
-            eprintln!("imgconvert AVIF benchmark failed: {error}");
+    if std::env::var_os("IMGCONVERT_PLATFORM_BENCHMARK").is_some()
+        || std::env::var_os("IMGCONVERT_AVIF_BENCHMARK").is_some()
+    {
+        if let Err(error) = run_platform_benchmark() {
+            eprintln!("imgconvert platform benchmark failed: {error}");
             std::process::exit(70);
         }
         return;
@@ -174,18 +176,54 @@ fn path_smoke_output_dir() -> Result<std::path::PathBuf, String> {
     Ok(dir)
 }
 
-const MAX_AVIF_BENCHMARK_PIXELS: u64 = 33_177_600;
-const MAX_AVIF_BENCHMARK_ITERATIONS: u32 = 100;
+const MAX_PLATFORM_BENCHMARK_PIXELS: u64 = 33_177_600;
+const MAX_PLATFORM_BENCHMARK_ITERATIONS: u32 = 100;
 
-fn run_avif_benchmark() -> Result<(), String> {
-    use imgconvert_core::{codec_for, convert, EncodeOptions, Format, ImageData};
+fn run_platform_benchmark() -> Result<(), String> {
+    use imgconvert_core::{codec_for, EncodeOptions, Format, ImageData};
 
-    let width = env_u32("IMGCONVERT_AVIF_BENCHMARK_WIDTH", 1024)?;
-    let height = env_u32("IMGCONVERT_AVIF_BENCHMARK_HEIGHT", 768)?;
+    let legacy_avif = std::env::var_os("IMGCONVERT_AVIF_BENCHMARK").is_some()
+        && std::env::var_os("IMGCONVERT_PLATFORM_BENCHMARK").is_none();
+    let width = env_u32_first(
+        &[
+            "IMGCONVERT_PLATFORM_BENCHMARK_WIDTH",
+            "IMGCONVERT_AVIF_BENCHMARK_WIDTH",
+        ],
+        1024,
+    )?;
+    let height = env_u32_first(
+        &[
+            "IMGCONVERT_PLATFORM_BENCHMARK_HEIGHT",
+            "IMGCONVERT_AVIF_BENCHMARK_HEIGHT",
+        ],
+        768,
+    )?;
     validate_benchmark_dimensions(width, height)?;
-    let iterations =
-        env_u32("IMGCONVERT_AVIF_BENCHMARK_ITERATIONS", 3)?.min(MAX_AVIF_BENCHMARK_ITERATIONS);
-    let speeds = env_speeds("IMGCONVERT_AVIF_BENCHMARK_SPEEDS", &[8, 10])?;
+    let iterations = env_u32_first(
+        &[
+            "IMGCONVERT_PLATFORM_BENCHMARK_ITERATIONS",
+            "IMGCONVERT_AVIF_BENCHMARK_ITERATIONS",
+        ],
+        3,
+    )?
+    .min(MAX_PLATFORM_BENCHMARK_ITERATIONS);
+    let quality = env_u8_in_range("IMGCONVERT_PLATFORM_BENCHMARK_QUALITY", 82, 1, 100)?;
+    let formats = env_benchmark_formats(if legacy_avif { "avif" } else { "avif,webp" })?;
+    let avif_speeds = env_u8_list_first(
+        &[
+            "IMGCONVERT_PLATFORM_BENCHMARK_AVIF_SPEEDS",
+            "IMGCONVERT_AVIF_BENCHMARK_SPEEDS",
+        ],
+        &[8, 10],
+        10,
+        "speed",
+    )?;
+    let webp_methods = env_u8_list_first(
+        &["IMGCONVERT_PLATFORM_BENCHMARK_WEBP_METHODS"],
+        &[4, 6],
+        6,
+        "method",
+    )?;
     let source = ImageData::new(width, height, benchmark_rgba(width, height)?)
         .map_err(|error| error.to_string())?;
     let source_png = codec_for(Format::Png)
@@ -193,30 +231,109 @@ fn run_avif_benchmark() -> Result<(), String> {
         .map_err(|error| error.to_string())?;
 
     println!(
-        "{{\"event\":\"start\",\"format\":\"avif\",\"width\":{width},\"height\":{height},\"iterations\":{iterations},\"speeds\":{:?}}}",
-        speeds
+        "{}",
+        serde_json::json!({
+            "event": "start",
+            "width": width,
+            "height": height,
+            "iterations": iterations,
+            "quality": quality,
+            "formats": formats.iter().map(|format| format.id()).collect::<Vec<_>>(),
+            "avifSpeeds": avif_speeds,
+            "webpMethods": webp_methods,
+            "os": std::env::consts::OS,
+            "arch": std::env::consts::ARCH,
+        })
     );
 
-    for speed in speeds {
-        for iteration in 1..=iterations {
-            let options = EncodeOptions {
-                quality: 82,
-                avif_speed: speed,
-                ..Default::default()
-            };
-            let started = std::time::Instant::now();
-            let encoded =
-                convert(&source_png, Format::Avif, &options).map_err(|error| error.to_string())?;
-            let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
-            println!(
-                "{{\"event\":\"sample\",\"format\":\"avif\",\"speed\":{speed},\"iteration\":{iteration},\"milliseconds\":{elapsed_ms:.3},\"bytes\":{}}}",
-                encoded.len()
-            );
+    for format in formats {
+        match format {
+            Format::Avif => {
+                for speed in &avif_speeds {
+                    for iteration in 1..=iterations {
+                        let options = EncodeOptions {
+                            quality,
+                            avif_speed: *speed,
+                            ..Default::default()
+                        };
+                        let sample = benchmark_convert_sample(&source_png, format, &options)?;
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "event": "sample",
+                                "format": format.id(),
+                                "speed": speed,
+                                "iteration": iteration,
+                                "milliseconds": sample.milliseconds,
+                                "megapixelsPerSecond": sample.megapixels_per_second(width, height),
+                                "bytes": sample.bytes,
+                                "quality": quality,
+                            })
+                        );
+                    }
+                }
+            }
+            Format::WebP => {
+                for method in &webp_methods {
+                    for iteration in 1..=iterations {
+                        let options = EncodeOptions {
+                            quality,
+                            webp_method: *method,
+                            ..Default::default()
+                        };
+                        let sample = benchmark_convert_sample(&source_png, format, &options)?;
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "event": "sample",
+                                "format": format.id(),
+                                "method": method,
+                                "iteration": iteration,
+                                "milliseconds": sample.milliseconds,
+                                "megapixelsPerSecond": sample.megapixels_per_second(width, height),
+                                "bytes": sample.bytes,
+                                "quality": quality,
+                            })
+                        );
+                    }
+                }
+            }
+            _ => return Err(format!("unsupported benchmark format: {}", format.id())),
         }
     }
 
-    println!("{{\"event\":\"finished\",\"format\":\"avif\"}}");
+    println!("{}", serde_json::json!({"event": "finished"}));
     Ok(())
+}
+
+struct BenchmarkSample {
+    milliseconds: f64,
+    bytes: usize,
+}
+
+impl BenchmarkSample {
+    fn megapixels_per_second(&self, width: u32, height: u32) -> f64 {
+        let megapixels = f64::from(width) * f64::from(height) / 1_000_000.0;
+        if self.milliseconds > 0.0 {
+            megapixels / (self.milliseconds / 1000.0)
+        } else {
+            0.0
+        }
+    }
+}
+
+fn benchmark_convert_sample(
+    source_png: &[u8],
+    format: imgconvert_core::Format,
+    options: &imgconvert_core::EncodeOptions,
+) -> Result<BenchmarkSample, String> {
+    let started = std::time::Instant::now();
+    let encoded =
+        imgconvert_core::convert(source_png, format, options).map_err(|error| error.to_string())?;
+    Ok(BenchmarkSample {
+        milliseconds: started.elapsed().as_secs_f64() * 1000.0,
+        bytes: encoded.len(),
+    })
 }
 
 fn benchmark_rgba(width: u32, height: u32) -> Result<Vec<u8>, String> {
@@ -251,12 +368,21 @@ fn validate_benchmark_dimensions(width: u32, height: u32) -> Result<(), String> 
     let pixels = u64::from(width)
         .checked_mul(u64::from(height))
         .ok_or_else(|| "benchmark dimensions overflow".to_string())?;
-    if pixels > MAX_AVIF_BENCHMARK_PIXELS {
+    if pixels > MAX_PLATFORM_BENCHMARK_PIXELS {
         return Err(format!(
-            "benchmark image is too large: {pixels} pixels > {MAX_AVIF_BENCHMARK_PIXELS}"
+            "benchmark image is too large: {pixels} pixels > {MAX_PLATFORM_BENCHMARK_PIXELS}"
         ));
     }
     Ok(())
+}
+
+fn env_u32_first(names: &[&str], default: u32) -> Result<u32, String> {
+    for name in names {
+        if std::env::var_os(name).is_some() {
+            return env_u32(name, default);
+        }
+    }
+    Ok(default)
 }
 
 fn env_u32(name: &str, default: u32) -> Result<u32, String> {
@@ -276,31 +402,81 @@ fn env_u32(name: &str, default: u32) -> Result<u32, String> {
     }
 }
 
-fn env_speeds(name: &str, default: &[u8]) -> Result<Vec<u8>, String> {
+fn env_u8_in_range(name: &str, default: u8, min: u8, max: u8) -> Result<u8, String> {
     let raw = match std::env::var(name) {
         Ok(value) => value,
-        Err(_) => return Ok(default.to_vec()),
+        Err(_) => return Ok(default),
     };
-    let mut speeds = Vec::new();
+    let value = raw
+        .trim()
+        .parse::<u8>()
+        .map_err(|error| format!("{name} must be an integer {min}-{max}: {error}"))?;
+    if (min..=max).contains(&value) {
+        Ok(value)
+    } else {
+        Err(format!("{name} must be {min}-{max}: {value}"))
+    }
+}
+
+fn env_u8_list_first(
+    names: &[&str],
+    default: &[u8],
+    max: u8,
+    label: &str,
+) -> Result<Vec<u8>, String> {
+    let Some((name, raw)) = names
+        .iter()
+        .find_map(|name| std::env::var(name).ok().map(|raw| (*name, raw)))
+    else {
+        return Ok(default.to_vec());
+    };
+    let mut values = Vec::new();
     for item in raw
         .split(',')
         .map(str::trim)
         .filter(|item| !item.is_empty())
     {
-        let speed = item
+        let value = item
             .parse::<u8>()
-            .map_err(|error| format!("{name} contains invalid speed {item}: {error}"))?;
-        if speed > 10 {
-            return Err(format!("{name} speed must be 0-10: {speed}"));
+            .map_err(|error| format!("{name} contains invalid {label} {item}: {error}"))?;
+        if value > max {
+            return Err(format!("{name} {label} must be 0-{max}: {value}"));
         }
-        if !speeds.contains(&speed) {
-            speeds.push(speed);
+        if !values.contains(&value) {
+            values.push(value);
         }
     }
-    if speeds.is_empty() {
-        Err(format!("{name} must include at least one speed"))
+    if values.is_empty() {
+        Err(format!("{name} must include at least one {label}"))
     } else {
-        Ok(speeds)
+        Ok(values)
+    }
+}
+
+fn env_benchmark_formats(default: &str) -> Result<Vec<imgconvert_core::Format>, String> {
+    let raw =
+        std::env::var("IMGCONVERT_PLATFORM_BENCHMARK_FORMATS").unwrap_or_else(|_| default.into());
+    let mut formats = Vec::new();
+    for item in raw
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+    {
+        let format = parse_smoke_format(item)?;
+        if !matches!(
+            format,
+            imgconvert_core::Format::Avif | imgconvert_core::Format::WebP
+        ) {
+            return Err(format!("unsupported benchmark format: {}", format.id()));
+        }
+        if !formats.contains(&format) {
+            formats.push(format);
+        }
+    }
+    if formats.is_empty() {
+        Err("IMGCONVERT_PLATFORM_BENCHMARK_FORMATS must include at least one format".to_string())
+    } else {
+        Ok(formats)
     }
 }
 
@@ -336,10 +512,29 @@ mod tests {
         std::env::set_var(OK_ENV, "8,10,8");
         std::env::set_var(BAD_ENV, "11");
 
-        assert_eq!(env_speeds(OK_ENV, &[6]).unwrap(), vec![8, 10]);
-        assert!(env_speeds(BAD_ENV, &[6]).is_err());
+        assert_eq!(
+            env_u8_list_first(&[OK_ENV], &[6], 10, "speed").unwrap(),
+            vec![8, 10]
+        );
+        assert!(env_u8_list_first(&[BAD_ENV], &[6], 10, "speed").is_err());
 
         std::env::remove_var(OK_ENV);
         std::env::remove_var(BAD_ENV);
+    }
+
+    #[test]
+    fn benchmark_formats_are_limited_to_avif_and_webp() {
+        const FORMATS_ENV: &str = "IMGCONVERT_PLATFORM_BENCHMARK_FORMATS";
+
+        std::env::set_var(FORMATS_ENV, "avif,webp,avif");
+        assert_eq!(
+            env_benchmark_formats("avif").unwrap(),
+            vec![imgconvert_core::Format::Avif, imgconvert_core::Format::WebP]
+        );
+
+        std::env::set_var(FORMATS_ENV, "jpeg");
+        assert!(env_benchmark_formats("avif").is_err());
+
+        std::env::remove_var(FORMATS_ENV);
     }
 }

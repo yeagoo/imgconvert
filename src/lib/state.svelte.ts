@@ -3,7 +3,13 @@
 
 import { Channel, invoke, isTauri as tauriIsTauri } from "@tauri-apps/api/core";
 import { confirm as confirmDialog, open as openDialog } from "@tauri-apps/plugin-dialog";
+import { relaunch } from "@tauri-apps/plugin-process";
 import { load, type Store } from "@tauri-apps/plugin-store";
+import {
+  check as checkTauriUpdate,
+  type DownloadEvent,
+  type Update,
+} from "@tauri-apps/plugin-updater";
 
 // ---- 类型 ----
 export type ItemStatus = "pending" | "running" | "done" | "skipped" | "error";
@@ -27,8 +33,17 @@ export interface Capabilities {
   readable: string[];
   writable: string[];
   lossless: string[];
+  colorPipeline: ColorPipelineCapability;
   heic: boolean;
   codecProviders: CodecProvider[];
+}
+
+export interface ColorPipelineCapability {
+  rgba8: boolean;
+  rgba16: boolean;
+  rgbaF32: boolean;
+  linearResize: boolean;
+  iccTransform: boolean;
 }
 
 export interface CodecProvider {
@@ -156,6 +171,21 @@ export interface ConversionPlanEntry {
   exists: boolean;
   error: string | null;
 }
+export interface AppUpdateState {
+  checking: boolean;
+  installing: boolean;
+  available: boolean;
+  checked: boolean;
+  installed: boolean;
+  version: string | null;
+  currentVersion: string | null;
+  date: string | null;
+  body: string | null;
+  message: string;
+  error: string;
+  downloadedBytes: number;
+  contentLength: number | null;
+}
 type ConvertRequest = {
   input: string;
   format: string;
@@ -186,6 +216,7 @@ type ConvertRequest = {
   sourceHeight: number | null;
   fileNameTemplate: string;
   preserveMetadata: boolean;
+  colorManagementPolicy: ColorManagementPolicy;
 };
 type BatchConvertRequest = {
   options: ConvertRequest[];
@@ -216,6 +247,7 @@ type BatchJob = {
 export type Theme = "light" | "dark" | "system";
 export type OverwriteMode = "ask" | "skip" | "overwrite";
 export type ImportMode = "scan" | "clipboard" | null;
+export type ColorManagementPolicy = "preserve" | "convertToSrgb";
 
 export interface Settings {
   format: string;
@@ -245,6 +277,7 @@ export interface Settings {
   heicHelperPath: string | null;
   fileNameTemplate: string;
   preserveMetadata: boolean;
+  colorManagementPolicy: ColorManagementPolicy;
   concurrency: number;
   theme: Theme;
   reduceMotion: boolean;
@@ -254,7 +287,14 @@ export interface Settings {
 const CORE_CAPABILITIES: Capabilities = {
   readable: ["jpeg", "png", "webp", "avif"],
   writable: ["jpeg", "png", "webp", "avif"],
-  lossless: ["png", "webp"],
+  lossless: ["png", "webp", "avif"],
+  colorPipeline: {
+    rgba8: true,
+    rgba16: true,
+    rgbaF32: true,
+    linearResize: true,
+    iccTransform: true,
+  },
   heic: false,
   codecProviders: [],
 };
@@ -352,6 +392,7 @@ export const settings = $state<Settings>({
   heicHelperPath: null,
   fileNameTemplate: "%name%",
   preserveMetadata: false,
+  colorManagementPolicy: "preserve",
   concurrency: 0,
   theme: "system",
   reduceMotion: false,
@@ -409,10 +450,29 @@ export const engine = $state<{ text: string; ok: boolean }>({
   ok: false,
 });
 
+export const appUpdate = $state<AppUpdateState>({
+  checking: false,
+  installing: false,
+  available: false,
+  checked: false,
+  installed: false,
+  version: null,
+  currentVersion: null,
+  date: null,
+  body: null,
+  message: "",
+  error: "",
+  downloadedBytes: 0,
+  contentLength: null,
+});
+
+let pendingAppUpdate: Update | null = null;
+
 export const capabilities = $state<Capabilities>({
   readable: [...CORE_CAPABILITIES.readable],
   writable: [...CORE_CAPABILITIES.writable],
   lossless: [...CORE_CAPABILITIES.lossless],
+  colorPipeline: { ...CORE_CAPABILITIES.colorPipeline },
   heic: CORE_CAPABILITIES.heic,
   codecProviders: [...CORE_CAPABILITIES.codecProviders],
 });
@@ -429,6 +489,114 @@ export function formatLabel(format: string): string {
 export function writableFormats() {
   const writable = new Set(capabilities.writable);
   return FORMATS.filter((format) => writable.has(format.value));
+}
+
+export async function checkForAppUpdate(): Promise<void> {
+  if (!isTauriRuntime()) {
+    resetAppUpdateResult();
+    appUpdate.checked = true;
+    appUpdate.message = "网页预览不连接桌面更新通道";
+    return;
+  }
+
+  appUpdate.checking = true;
+  appUpdate.error = "";
+  appUpdate.message = "";
+  appUpdate.installed = false;
+  try {
+    if (pendingAppUpdate) {
+      void pendingAppUpdate.close().catch(() => undefined);
+    }
+    pendingAppUpdate = await checkTauriUpdate({ timeout: 30_000 });
+    appUpdate.checked = true;
+    appUpdate.downloadedBytes = 0;
+    appUpdate.contentLength = null;
+    if (!pendingAppUpdate) {
+      appUpdate.available = false;
+      appUpdate.version = null;
+      appUpdate.currentVersion = null;
+      appUpdate.date = null;
+      appUpdate.body = null;
+      appUpdate.message = "当前已经是最新版本";
+      return;
+    }
+
+    appUpdate.available = true;
+    appUpdate.version = pendingAppUpdate.version;
+    appUpdate.currentVersion = pendingAppUpdate.currentVersion;
+    appUpdate.date = pendingAppUpdate.date ?? null;
+    appUpdate.body = pendingAppUpdate.body ?? null;
+    appUpdate.message = `发现新版本 ${pendingAppUpdate.version}`;
+  } catch (error) {
+    resetAppUpdateResult();
+    appUpdate.checked = true;
+    appUpdate.error = formatUpdaterError(error);
+  } finally {
+    appUpdate.checking = false;
+  }
+}
+
+export async function installAppUpdate(): Promise<void> {
+  if (!pendingAppUpdate || appUpdate.installing) return;
+
+  appUpdate.installing = true;
+  appUpdate.error = "";
+  appUpdate.message = "正在下载更新…";
+  appUpdate.downloadedBytes = 0;
+  appUpdate.contentLength = null;
+
+  try {
+    await pendingAppUpdate.downloadAndInstall(handleUpdateDownloadEvent, { timeout: 120_000 });
+    appUpdate.installed = true;
+    appUpdate.available = false;
+    appUpdate.message = "更新已安装,正在重启…";
+    pendingAppUpdate = null;
+    await relaunch();
+  } catch (error) {
+    appUpdate.error = formatUpdaterError(error);
+  } finally {
+    appUpdate.installing = false;
+  }
+}
+
+function handleUpdateDownloadEvent(event: DownloadEvent) {
+  switch (event.event) {
+    case "Started":
+      appUpdate.contentLength = event.data.contentLength ?? null;
+      appUpdate.downloadedBytes = 0;
+      return;
+    case "Progress":
+      appUpdate.downloadedBytes += event.data.chunkLength;
+      return;
+    case "Finished":
+      if (appUpdate.contentLength !== null) {
+        appUpdate.downloadedBytes = appUpdate.contentLength;
+      }
+      appUpdate.message = "下载完成,正在安装…";
+      return;
+  }
+}
+
+function resetAppUpdateResult() {
+  pendingAppUpdate = null;
+  appUpdate.available = false;
+  appUpdate.installed = false;
+  appUpdate.version = null;
+  appUpdate.currentVersion = null;
+  appUpdate.date = null;
+  appUpdate.body = null;
+  appUpdate.downloadedBytes = 0;
+  appUpdate.contentLength = null;
+  appUpdate.message = "";
+  appUpdate.error = "";
+}
+
+function formatUpdaterError(error: unknown): string {
+  const message = String(error);
+  if (/not configured|No updater config|updater.*config/i.test(message)) {
+    return "此构建未启用更新通道。正式直发包需要使用 updater release 配置构建。";
+  }
+  return `更新检查失败:${message}`;
 }
 
 export function readableExtensions(): string[] {
@@ -1348,6 +1516,7 @@ function buildConvertRequest(item: QueueItem, format: string): ConvertRequest {
     sourceHeight: item.metadata?.height ?? null,
     fileNameTemplate: settings.fileNameTemplate,
     preserveMetadata: settings.preserveMetadata,
+    colorManagementPolicy: settings.colorManagementPolicy,
   };
 }
 
@@ -1598,6 +1767,9 @@ function normalizeSettings() {
   }
   if (typeof settings.preserveMetadata !== "boolean") {
     settings.preserveMetadata = false;
+  }
+  if (!["preserve", "convertToSrgb"].includes(settings.colorManagementPolicy)) {
+    settings.colorManagementPolicy = "preserve";
   }
   if (typeof settings.concurrency !== "number" || !Number.isFinite(settings.concurrency)) {
     settings.concurrency = 0;

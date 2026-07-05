@@ -1,0 +1,106 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Optional LGPL decode-only HEIC/HEIF Flatpak extension.
+# This is not part of the Apache-2.0 main application bundle.
+
+id: com.ivmm.imgconvert.Codecs.Heic
+branch: "1"
+runtime: com.ivmm.imgconvert
+runtime-version: stable
+sdk: org.gnome.Sdk//50
+build-extension: true
+separate-locales: false
+
+build-options:
+  prefix: /app/extensions/codecs/heic
+  prepend-path: /app/extensions/codecs/heic/bin
+  prepend-pkg-config-path: /app/extensions/codecs/heic/lib/pkgconfig
+  env:
+    PKG_CONFIG_PATH: /app/extensions/codecs/heic/lib/pkgconfig
+
+cleanup:
+  - /include
+  - /lib/cmake
+  - /lib/pkgconfig
+  - /share/man
+
+modules:
+  - name: libde265
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DBUILD_SHARED_LIBS=ON
+      - -DENABLE_DECODER=ON
+      - -DENABLE_ENCODER=OFF
+      - -DENABLE_SDL=OFF
+      - -DENABLE_SHERLOCK265=OFF
+      - -DENABLE_INTERNAL_DEVELOPMENT_TOOLS=OFF
+      - -DWITH_FUZZERS=OFF
+    post-install:
+      - install -Dm644 COPYING ${FLATPAK_DEST}/share/licenses/com.ivmm.imgconvert.Codecs.Heic/libde265-COPYING
+    sources:
+      - type: archive
+        url: https://github.com/strukturag/libde265/releases/download/v1.1.1/libde265-1.1.1.tar.gz
+        sha256: fd48a927e94ed74fc7ce8829d222b9d8599fcbfe8b6448ba66705babc56ab219
+
+  - name: libheif
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DBUILD_SHARED_LIBS=ON
+      - -DENABLE_PLUGIN_LOADING=OFF
+      - -DWITH_LIBDE265=ON
+      - -DWITH_LIBDE265_PLUGIN=OFF
+      - -DWITH_X265=OFF
+      - -DWITH_X264=OFF
+      - -DWITH_KVAZAAR=OFF
+      - -DWITH_UVG266=OFF
+      - -DWITH_VVDEC=OFF
+      - -DWITH_VVENC=OFF
+      - -DWITH_OpenH264_DECODER=OFF
+      - -DWITH_DAV1D=OFF
+      - -DWITH_AOM_DECODER=OFF
+      - -DWITH_AOM_ENCODER=OFF
+      - -DWITH_SvtEnc=OFF
+      - -DWITH_RAV1E=OFF
+      - -DWITH_JPEG_DECODER=OFF
+      - -DWITH_JPEG_ENCODER=OFF
+      - -DWITH_OpenJPEG_DECODER=OFF
+      - -DWITH_OpenJPEG_ENCODER=OFF
+      - -DWITH_FFMPEG_DECODER=OFF
+      - -DWITH_OPENJPH_ENCODER=OFF
+      - -DWITH_UNCOMPRESSED_CODEC=OFF
+      - -DWITH_WEBCODECS=OFF
+      - -DWITH_EXAMPLES=ON
+      - -DWITH_EXAMPLE_HEIF_THUMB=OFF
+      - -DWITH_EXAMPLE_HEIF_VIEW=OFF
+      - -DWITH_GDK_PIXBUF=OFF
+      - -DBUILD_DEVELOPMENT_TOOLS=OFF
+      - -DBUILD_DOCUMENTATION=OFF
+      - -DBUILD_TESTING=OFF
+      - -DWITH_FUZZERS=OFF
+    post-install:
+      - install -Dm644 COPYING ${FLATPAK_DEST}/share/licenses/com.ivmm.imgconvert.Codecs.Heic/libheif-COPYING
+      - test -x ${FLATPAK_DEST}/bin/heif-dec
+      - test -e ${FLATPAK_DEST}/bin/heif-convert
+    sources:
+      - type: archive
+        url: https://github.com/strukturag/libheif/releases/download/v1.23.1/libheif-1.23.1.tar.gz
+        sha256: 0de0327f60fcd47de90d5654c6fe152232738d60d84fe084ec3e0f35e03b166a
+
+  - name: imgconvert-codec-heic
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 imgconvert-heic-helper.sh ${FLATPAK_DEST}/bin/imgconvert-heic-helper
+      - install -Dm644 imgconvert-codec-heic.json ${FLATPAK_DEST}/imgconvert-codec-heic.json
+      - install -Dm644 com.ivmm.imgconvert.Codecs.Heic.metainfo.xml ${FLATPAK_DEST}/share/metainfo/com.ivmm.imgconvert.Codecs.Heic.metainfo.xml
+      - install -Dm644 LGPL_NOTICE.md ${FLATPAK_DEST}/share/doc/com.ivmm.imgconvert.Codecs.Heic/LGPL_NOTICE.md
+    sources:
+      - type: file
+        path: imgconvert-heic-helper.sh
+      - type: file
+        path: imgconvert-codec-heic.json
+      - type: file
+        path: com.ivmm.imgconvert.Codecs.Heic.metainfo.xml
+      - type: file
+        path: LGPL_NOTICE.md

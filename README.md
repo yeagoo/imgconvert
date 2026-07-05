@@ -10,31 +10,32 @@
 
 ## ✨ 功能
 
-> 状态图例:✅ 已实现 · 🚧 计划中(详见 [docs/ROADMAP.md](docs/ROADMAP.md))
+> 状态图例:✅ 已实现 · 🚧 需要真实平台/账号/证书继续验收(详见 [docs/ROADMAP.md](docs/ROADMAP.md))
 
-- ✅ 拖拽导入(Tauri 原生 `onDragDropEvent`,拿到真实文件路径)
-- ✅ 格式转换:AVIF / WebP / JPEG / PNG(由进程内 Rust core 提供)
-- ✅ 有损 / 无损压缩(各格式按其特性映射)
-- ✅ 自定义输出目录、质量、覆盖策略、文件名模板
-- ✅ 批量转换(**当前为前端串行**,逐个文件;P1 改为 Rust 端并发)
-- 🚧 HEIC:Linux v1 不含;macOS/Windows 后续走系统原生能力
-- 🚧 并发批量 + 进度/取消(Rust 端,Channel 上报)
-- 🚧 高级压缩(自动质量、多候选取最小、ICC/EXIF 保真)
-- 🚧 上架 Mac App Store / Microsoft Store / Flathub
+- ✅ 拖拽、选择文件/目录、递归导入、剪贴板图片导入,带尺寸/DPI ping 与异步缩略图。
+- ✅ 格式转换:AVIF / WebP / JPEG / PNG(由进程内 Rust core 提供)。
+- ✅ Rust 端批量转换:并发控制、内存预算降并发、Channel 进度、取消、成功/跳过/失败汇总。
+- ✅ 压缩策略:skip-if-larger、多候选取最小、JPEG/WebP 自动质量、代际损失防护、结果缓存。
+- ✅ 保真能力:EXIF orientation 真旋正、ICC/EXIF/XMP/IPTC 保留或剥离、Display P3 ICC 测试、显式转 sRGB。
+- ✅ 可选 HEIC 导入:Linux 外部 helper/Flatpak extension、macOS ImageIO、Windows WIC 探测;主程序不内置 HEIC codec,不输出 HEIC。
+- ✅ 发布工程:Linux `.deb/.rpm/AppImage`、Flatpak manifest、Tauri updater 脚本、macOS/Windows repo 侧打包与签名入口、质量/许可/fuzz/benchmark guardrails。
+- 🚧 真实发布验收:Apple Developer 签名/公证/MAS、Windows 代码签名/MSIX/Store、Flathub 审核、真实 updater 发布、真实图片 corpus 长跑 fuzz、macOS/Windows benchmark 数据。
 
 > ✅ **架构已切换(2026-06-30)**:引擎从 libvips CLI 改为**进程内宽松许可 Rust 编解码 crate + 后续平台系统 HEIC**(混合架构),许可证为 **Apache-2.0**,目标上架三大商店。详见 [docs/ROADMAP.md](docs/ROADMAP.md) / [docs/ENGINE.md](docs/ENGINE.md)。
 
 ## 当前状态
 
-- ✅ **P0 UI 外壳**:组件化 Svelte 5 界面、shadcn 控件、格式选择器、网页预览与 Tauri 串行转换胶水已接通。
-- ✅ **混合架构 core**:进程内 core crate(mozjpeg/oxipng/webp/libavif-sys/image)已跑通 JPEG/PNG/WebP/AVIF。
-- 🚧 **Release MVP**:并发/进度/取消、签名、沙盒、三商店上架 —— 尚未开始。
+- ✅ **P0/P0.5**:组件化 Svelte 5 UI、shadcn 控件、格式选择器、core 能力矩阵、许可/架构护栏已落地。
+- ✅ **P1/P1.5**:文件导入、并发批量、进度/取消、缩略图、剪贴板导入、文件可靠性、可选 HEIC helper/plugin 已落地。
+- ✅ **P2**:高级压缩、metadata 保真、色彩管线 v2、AVIF 真无损、语义 metadata、图像质量测试、fuzz/corpus/replay/minimize 已落地。
+- ✅ **P3 repo 侧**:Linux 发布闭环、Flatpak/HEIC extension、Tauri updater、macOS/Windows 打包与签名脚本、GitHub Actions 成本护栏已落地。
+- 🚧 **外部验收**:真实 Apple/Windows 签名与商店提交、Flathub 审核、真实 updater 发布、真实样张 corpus 与 macOS/Windows benchmark 仍依赖外部账号、证书或设备。
 
 ## 🛠️ 技术栈
 
 - **前端**:Tauri 2 + Svelte 5(runes)+ shadcn-svelte / Tailwind v4 + phosphor-svelte(duotone 图标);包管理用 **pnpm**,运行时用 Node LTS
 - **引擎(混合架构)**:进程内宽松许可 Rust 编解码 crate(`mozjpeg`/`oxipng`/`webp`/`libavif-sys`/`image`),构建期静态链接为单一二进制
-- **HEIC**:Linux v1 不含;后续 macOS ImageIO / Windows WIC 走**系统原生**,不随包分发 x265(详见 [docs/LEGAL.md](docs/LEGAL.md))
+- **HEIC**:主程序不内置 HEIC codec、不随包分发 x265;直发/插件场景可用外部 helper 或 Flatpak extension,macOS/Windows 走系统 ImageIO/WIC read-only provider(详见 [docs/LEGAL.md](docs/LEGAL.md))
 
 > 具体版本以仓库锁定文件为准(`package.json#packageManager`、`pnpm-lock.yaml`、`src-tauri/rust-toolchain.toml`、`Cargo.lock`);完整版本表与决策见 [docs/ROADMAP.md](docs/ROADMAP.md)。
 
@@ -48,7 +49,9 @@
 pnpm install           # 前端依赖
 pnpm run tauri dev     # 开发
 pnpm run tauri build   # 打 .app / .dmg
-pnpm run check         # svelte-check 类型检查
+pnpm run check         # 前端类型检查 + lint
+pnpm run release:readiness # 只读发布状态报告,不构建/不联网/不触发 Actions
+pnpm run release:platform:check # 架构/发布/文档静态护栏
 ```
 
 加 shadcn-svelte 组件:`pnpm dlx shadcn-svelte@latest add <component>`(配置见 `components.json`)。

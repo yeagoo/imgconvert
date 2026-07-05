@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Template only. Replace the placeholder source module with a separately
+# licensed decode-only HEIC helper package before submitting an extension.
+
+id: com.ivmm.imgconvert.Codecs.Heic
+branch: "1"
+runtime: com.ivmm.imgconvert
+runtime-version: stable
+sdk: org.gnome.Sdk//50
+build-extension: true
+separate-locales: false
+
+build-options:
+  prefix: /app/extensions/codecs/heic
+  prepend-path: /app/extensions/codecs/heic/bin
+
+modules:
+  - name: imgconvert-codec-heic
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 imgconvert-heic-helper ${FLATPAK_DEST}/bin/imgconvert-heic-helper
+      - install -Dm644 imgconvert-codec-heic.json ${FLATPAK_DEST}/imgconvert-codec-heic.json
+      - install -Dm644 com.ivmm.imgconvert.Codecs.Heic.metainfo.xml ${FLATPAK_DEST}/share/metainfo/com.ivmm.imgconvert.Codecs.Heic.metainfo.xml
+    sources:
+      # Provide a real release archive for a decode-only helper here.
+      # The helper project must carry its own LGPL source/NOTICE obligations.
+      - type: file
+        path: imgconvert-heic-helper
+      - type: file
+        path: imgconvert-codec-heic.json
+      - type: file
+        path: com.ivmm.imgconvert.Codecs.Heic.metainfo.xml

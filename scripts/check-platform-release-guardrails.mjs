@@ -37,6 +37,17 @@ const srcTauriRoot = path.join(repoRoot, "src-tauri");
 const failures = [];
 
 checkCommonBundleMetadata();
+checkArchitectureGuardrailWiring();
+checkReadmeStatusGuardrails();
+checkReleaseReadinessGuardrails();
+checkAvifLosslessGuardrails();
+checkSemanticMetadataGuardrails();
+checkPlatformBenchmarkGuardrails();
+checkImageQualityGuardrails();
+checkProbeMetadataGuardrails();
+checkFuzzCorpusGuardrails();
+checkTauriUpdaterGuardrails();
+checkFlatpakHeicExtensionGuardrails();
 
 if (options.platforms.includes("macos")) {
   checkMacos();
@@ -91,6 +102,597 @@ function checkCommonBundleMetadata() {
   }
 }
 
+function checkArchitectureGuardrailWiring() {
+  const packageScripts = packageJson.scripts ?? {};
+  const architectureScript = readText(
+    path.join(repoRoot, "scripts", "check-architecture-guardrails.mjs"),
+  );
+  if (!packageScripts["architecture:check"]?.includes("check-architecture-guardrails.mjs")) {
+    failures.push("package.json must expose architecture:check");
+  }
+  if (!packageScripts["release:platform:check"]?.includes("architecture:check")) {
+    failures.push("release:platform:check must run architecture:check first");
+  }
+  for (const expected of [
+    "checkLicensingAndDependencies",
+    "checkCoreFormatBoundary",
+    "checkHeicBoundary",
+    "checkStoreExternalCodecBoundary",
+    "checkExplicitFileAccessBoundary",
+  ]) {
+    if (!architectureScript.includes(expected)) {
+      failures.push(`architecture guardrail script missing marker: ${expected}`);
+    }
+  }
+}
+
+function checkReleaseReadinessGuardrails() {
+  const packageScripts = packageJson.scripts ?? {};
+  const readinessScript = readText(path.join(repoRoot, "scripts", "report-release-readiness.mjs"));
+  const roadmap = readText(path.join(repoRoot, "docs", "ROADMAP.md"));
+  const engine = readText(path.join(repoRoot, "docs", "ENGINE.md"));
+  const ciCosts = readText(path.join(repoRoot, "docs", "CI_COSTS.md"));
+
+  if (!packageScripts["release:readiness"]?.includes("report-release-readiness.mjs")) {
+    failures.push("package.json must expose release:readiness");
+  }
+  if (
+    !packageScripts["release:readiness:check"]?.includes("report-release-readiness.mjs --check")
+  ) {
+    failures.push("package.json must expose release:readiness:check");
+  }
+  if (!packageScripts["release:platform:check"]?.includes("release:readiness:check")) {
+    failures.push("release:platform:check must run release:readiness:check");
+  }
+  for (const expected of [
+    "--json",
+    "--check",
+    "--require-ready",
+    "docs:check",
+    "TAURI_UPDATER_PUBKEY",
+    "TAURI_SIGNING_PRIVATE_KEY",
+    "WINDOWS_CERTIFICATE_BASE64",
+    "IMGCONVERT_MAS_PROVISION_PROFILE",
+    "flathub-main-submission",
+    "real-image-corpus-fuzz",
+    "windows-platform-benchmark",
+    "release:platform:check",
+    "release:flatpak:verify",
+    "bench:avif:macos",
+    "does not build artifacts",
+  ]) {
+    if (!readinessScript.includes(expected)) {
+      failures.push(`release readiness report missing marker: ${expected}`);
+    }
+  }
+  for (const [name, text] of [
+    ["docs/ROADMAP.md", roadmap],
+    ["docs/ENGINE.md", engine],
+    ["docs/CI_COSTS.md", ciCosts],
+  ]) {
+    if (!text.includes("release:readiness")) {
+      failures.push(`${name} must document release:readiness`);
+    }
+  }
+}
+
+function checkReadmeStatusGuardrails() {
+  const packageScripts = packageJson.scripts ?? {};
+  const readmeScriptPath = path.join(repoRoot, "scripts", "check-readme-status.mjs");
+  const readmeScript = readText(readmeScriptPath);
+  const readme = readText(path.join(repoRoot, "README.md"));
+  const ci = readText(path.join(repoRoot, ".github", "workflows", "ci.yml"));
+
+  if (!packageScripts["docs:check"]?.includes("check-readme-status.mjs")) {
+    failures.push("package.json must expose docs:check");
+  }
+  if (!packageScripts["quality:security"]?.includes("docs:check")) {
+    failures.push("quality:security must include docs:check");
+  }
+  if (!ci.includes("pnpm run docs:check")) {
+    failures.push("ci.yml must run docs:check");
+  }
+  for (const expected of [
+    "当前为前端串行",
+    "Rust 端批量转换",
+    "真实发布验收",
+    "release:readiness",
+    "release:platform:check",
+  ]) {
+    if (!readmeScript.includes(expected)) {
+      failures.push(`README status guardrail missing marker: ${expected}`);
+    }
+  }
+  for (const expected of [
+    "Rust 端批量转换",
+    "AVIF 真无损",
+    "Tauri updater",
+    "外部验收",
+    "pnpm run release:readiness",
+  ]) {
+    if (!readme.includes(expected)) {
+      failures.push(`README missing current status marker: ${expected}`);
+    }
+  }
+}
+
+function checkAvifLosslessGuardrails() {
+  const coreCargo = readText(path.join(repoRoot, "crates", "imgconvert-core", "Cargo.toml"));
+  const coreLib = readText(path.join(repoRoot, "crates", "imgconvert-core", "src", "lib.rs"));
+  const tauriConvert = readText(path.join(repoRoot, "src-tauri", "src", "convert.rs"));
+  const stateTs = readText(path.join(repoRoot, "src", "lib", "state.svelte.ts"));
+  const thirdParty = readText(path.join(repoRoot, "THIRD_PARTY_LICENSES.md"));
+
+  if (!coreCargo.includes('"codec-aom"')) {
+    failures.push("AVIF lossless requires libavif-sys codec-aom feature");
+  }
+  if (!coreLib.includes("AVIF_LOSSLESS_SUPPORTED: bool = true")) {
+    failures.push("AVIF lossless capability flag must stay enabled only after pixel tests pass");
+  }
+  if (
+    !coreLib.includes("LOSSLESS_FORMATS: &[Format] = &[Format::Png, Format::WebP, Format::Avif]")
+  ) {
+    failures.push("AVIF must be included in core LOSSLESS_FORMATS");
+  }
+  if (!coreLib.includes("AVIF_CODEC_CHOICE_AOM")) {
+    failures.push("AVIF lossless encode path must choose AOM, not rav1e");
+  }
+  if (!tauriConvert.includes("target == Format::Avif && !encode_options.lossless")) {
+    failures.push("generation loss guard must not treat AVIF lossless targets as lossy");
+  }
+  if (!stateTs.includes('lossless: ["png", "webp", "avif"]')) {
+    failures.push("frontend fallback capabilities must include AVIF lossless");
+  }
+  if (!thirdParty.includes("libaom-sys")) {
+    failures.push("THIRD_PARTY_LICENSES.md must be regenerated after adding libaom-sys");
+  }
+}
+
+function checkSemanticMetadataGuardrails() {
+  const coreLib = readText(path.join(repoRoot, "crates", "imgconvert-core", "src", "lib.rs"));
+  const tauriConvert = readText(path.join(repoRoot, "src-tauri", "src", "convert.rs"));
+  const externalCodecs = readText(path.join(repoRoot, "src-tauri", "src", "external_codecs.rs"));
+
+  for (const expected of [
+    "pub iptc: Option<Vec<u8>>",
+    "inspect_metadata_semantics",
+    "MetadataSemanticReport",
+    "ExifMakerNoteSummary",
+    "IptcDatasetSummary",
+    "JPEG_IPTC_RESOURCE_ID",
+    "extract_jpeg_photoshop_iptc",
+    "write_jpeg_iptc_segment",
+    "fn extract_avif_metadata",
+    "fn avif_metadata_from_image",
+    "metadata_from_image_format(&av, Format::Avif)",
+    "xml_prefixes_for_namespace",
+    "xmp_semantic_cleanup_handles_namespace_aliases",
+    "metadata_semantics_report_detects_iptc_and_makernote_without_rewriting_private_bytes",
+  ]) {
+    if (!coreLib.includes(expected)) {
+      failures.push(`semantic metadata guardrail missing core marker: ${expected}`);
+    }
+  }
+
+  if (!tauriConvert.includes('hash_optional_metadata_blob(hasher, b"iptc"')) {
+    failures.push("result cache key must include IPTC metadata override blobs");
+  }
+  if (!externalCodecs.includes("iptc: Option<String>")) {
+    failures.push("HEIC metadata sidecar must keep optional IPTC blob support");
+  }
+}
+
+function checkPlatformBenchmarkGuardrails() {
+  const packageScripts = packageJson.scripts ?? {};
+  const benchmarkScript = readText(path.join(repoRoot, "scripts", "benchmark-platform.mjs"));
+  const macosBenchmarkScript = readText(path.join(repoRoot, "scripts", "benchmark-macos-avif.mjs"));
+  const coreLib = readText(path.join(repoRoot, "crates", "imgconvert-core", "src", "lib.rs"));
+  const tauriConvert = readText(path.join(repoRoot, "src-tauri", "src", "convert.rs"));
+
+  if (!packageScripts["bench:platform"]?.includes("benchmark-platform.mjs")) {
+    failures.push("package.json must expose bench:platform for AVIF/WebP platform timing");
+  }
+  if (!benchmarkScript.includes('profile: "release"')) {
+    failures.push("benchmark-platform must default to release profile for real timing data");
+  }
+  if (!benchmarkScript.includes('"--release"')) {
+    failures.push("benchmark-platform must run cargo with --release by default");
+  }
+  if (!benchmarkScript.includes("recommendations: recommendDefaults")) {
+    failures.push("benchmark-platform must emit default-parameter recommendations");
+  }
+  if (!benchmarkScript.includes('path.join("target", "benchmarks"')) {
+    failures.push("benchmark-platform must persist JSON reports under target/benchmarks");
+  }
+  if (!macosBenchmarkScript.includes("benchmark-platform.mjs")) {
+    failures.push("benchmark-macos-avif must reuse platform benchmark reporting");
+  }
+  if (!coreLib.includes("convert_best_of_with_color_policy_timeout")) {
+    failures.push("imgconvert-core must expose a timed best-of conversion entry");
+  }
+  if (!coreLib.includes("convert_auto_quality_with_color_policy_timeout")) {
+    failures.push("imgconvert-core must expose a timed auto-quality conversion entry");
+  }
+  if (!tauriConvert.includes("IMGCONVERT_CONVERT_TIMEOUT_SECONDS")) {
+    failures.push("Tauri convert path must support a wall-clock timeout override");
+  }
+  if (!tauriConvert.includes("convert_wall_clock_timeout_seconds")) {
+    failures.push("runtime diagnostics must expose the convert wall-clock timeout");
+  }
+}
+
+function checkImageQualityGuardrails() {
+  const packageScripts = packageJson.scripts ?? {};
+  const coreLib = readText(path.join(repoRoot, "crates", "imgconvert-core", "src", "lib.rs"));
+  const imageQualityTest = readText(
+    path.join(repoRoot, "crates", "imgconvert-core", "tests", "image_quality.rs"),
+  );
+
+  if (!packageScripts["test:image-quality"]?.includes("check-image-quality.mjs")) {
+    failures.push("package.json must expose test:image-quality for deterministic quality tests");
+  }
+  for (const expected of [
+    "pub webp_block_score: f64",
+    "pub jpeg_chroma_grid_score: f64",
+    "JPEG_CHROMA_GRID_ARTIFACT_SCORE_THRESHOLD",
+    "jpeg_chroma_grid_artifact_score",
+    "WEBP_BLOCK_ARTIFACT_SCORE_THRESHOLD",
+    "webp_block_artifact_score",
+    "block_boundary_artifact_score",
+    "lossy_artifact_hint_detects_png_jpeg_chroma_grid",
+    "lossy_artifact_hint_detects_png_webp_like_blocks",
+  ]) {
+    if (!coreLib.includes(expected)) {
+      failures.push(`image quality guardrail missing core marker: ${expected}`);
+    }
+  }
+  for (const expected of [
+    "quality_artifact_hint_detects_block_artifact_corpus_fixtures",
+    "webp_like_block_fixture",
+    "jpeg_chroma_grid_fixture",
+    "jpeg_chroma_grid_score",
+    "webp_block_score",
+  ]) {
+    if (!imageQualityTest.includes(expected)) {
+      failures.push(`image quality guardrail missing integration marker: ${expected}`);
+    }
+  }
+}
+
+function checkProbeMetadataGuardrails() {
+  const coreLib = readText(path.join(repoRoot, "crates", "imgconvert-core", "src", "lib.rs"));
+  for (const expected of [
+    "fn parse_exif_dpi",
+    "fn tiff_entry_rational_value",
+    "fn probe_webp_exif_dpi",
+    "fn probe_avif_exif_dpi",
+    "parse_exif_dpi_accepts_optional_exif_prefix",
+    "probe_jpeg_reads_exif_resolution_dpi",
+    "probe_webp_reads_exif_resolution_dpi",
+    "probe_avif_reads_exif_resolution_dpi",
+    "exif_with_resolution",
+  ]) {
+    if (!coreLib.includes(expected)) {
+      failures.push(`probe metadata guardrail missing core marker: ${expected}`);
+    }
+  }
+}
+
+function checkFuzzCorpusGuardrails() {
+  const packageScripts = packageJson.scripts ?? {};
+  const workspaceCargo = readText(path.join(repoRoot, "Cargo.toml"));
+  const fuzzCargo = readText(path.join(repoRoot, "fuzz", "Cargo.toml"));
+  const prepareScriptPath = path.join(repoRoot, "scripts", "prepare-fuzz-corpus.mjs");
+  const replayScriptPath = path.join(repoRoot, "scripts", "replay-fuzz-corpus.mjs");
+  const minimizeScriptPath = path.join(repoRoot, "scripts", "minimize-fuzz-artifacts.mjs");
+  const prepareScript = readText(prepareScriptPath);
+  const replayScript = readText(replayScriptPath);
+  const minimizeScript = readText(minimizeScriptPath);
+  const replayExample = readText(
+    path.join(repoRoot, "crates", "imgconvert-core", "examples", "replay_fuzz_corpus.rs"),
+  );
+  const fuzzCorpusIgnore = readText(path.join(repoRoot, "fuzz", "corpus", ".gitignore"));
+  const realCorpusIgnore = readText(path.join(repoRoot, "corpus", "real", ".gitignore"));
+
+  if (!workspaceCargo.includes('"fuzz"')) {
+    failures.push("workspace Cargo.toml must exclude fuzz from normal workspace builds");
+  }
+  for (const scriptName of [
+    "fuzz:prepare",
+    "fuzz:prepare:require-real",
+    "fuzz:check",
+    "fuzz:replay",
+    "fuzz:minimize",
+    "fuzz:minimize:run",
+    "fuzz:smoke",
+    "fuzz:ci",
+  ]) {
+    if (!packageScripts[scriptName]) {
+      failures.push(`package.json must expose ${scriptName}`);
+    }
+  }
+  if (!packageScripts["fuzz:smoke"]?.includes("fuzz:replay")) {
+    failures.push("fuzz:smoke must replay prepared corpus, not only compile targets");
+  }
+  for (const target of ["decode_pipeline", "convert_pipeline", "metadata_semantics"]) {
+    if (!fuzzCargo.includes(`name = "${target}"`)) {
+      failures.push(`fuzz/Cargo.toml must define ${target} fuzz target`);
+    }
+    if (!existsSync(path.join(repoRoot, "fuzz", "fuzz_targets", `${target}.rs`))) {
+      failures.push(`fuzz target source missing: ${target}.rs`);
+    }
+  }
+  if (!fuzzCargo.includes("libfuzzer-sys")) {
+    failures.push("fuzz/Cargo.toml must use libfuzzer-sys");
+  }
+  if (!existsSync(prepareScriptPath) || !prepareScript.includes("IMGCONVERT_REAL_CORPUS_DIRS")) {
+    failures.push("prepare-fuzz-corpus must support local real corpus directories");
+  }
+  if (
+    !prepareScript.includes("corpus/real") ||
+    !prepareScript.includes("real-corpus-manifest.json")
+  ) {
+    failures.push("prepare-fuzz-corpus must import corpus/real and write a local manifest");
+  }
+  if (
+    !existsSync(replayScriptPath) ||
+    !replayScript.includes("replay_fuzz_corpus") ||
+    !replayScript.includes("replay-report.json")
+  ) {
+    failures.push("replay-fuzz-corpus must run the Rust replay example and persist a report");
+  }
+  if (
+    !existsSync(minimizeScriptPath) ||
+    !minimizeScript.includes('"fuzz", "tmin"') ||
+    !minimizeScript.includes("minimize-report.json") ||
+    !minimizeScript.includes("--dry-run")
+  ) {
+    failures.push("minimize-fuzz-artifacts must support dry-run tmin planning and reports");
+  }
+  if (
+    !replayExample.includes("convert_best_of_with_color_policy_timeout") ||
+    !replayExample.includes("inspect_metadata_semantics") ||
+    !replayExample.includes("catch_unwind")
+  ) {
+    failures.push("replay_fuzz_corpus example must cover convert, metadata, and panic capture");
+  }
+  if (!fuzzCorpusIgnore.startsWith("*\n") || !realCorpusIgnore.startsWith("*\n")) {
+    failures.push("local fuzz and real corpus directories must ignore generated/private images");
+  }
+}
+
+function checkTauriUpdaterGuardrails() {
+  const packageScripts = packageJson.scripts ?? {};
+  const packageDependencies = packageJson.dependencies ?? {};
+  const tauriCargo = readText(path.join(repoRoot, "src-tauri", "Cargo.toml"));
+  const tauriLib = readText(path.join(repoRoot, "src-tauri", "src", "lib.rs"));
+  const capabilities = readText(path.join(repoRoot, "src-tauri", "capabilities", "default.json"));
+  const stateTs = readText(path.join(repoRoot, "src", "lib", "state.svelte.ts"));
+  const updateDialog = readText(
+    path.join(repoRoot, "src", "lib", "components", "UpdateDialog.svelte"),
+  );
+  const updaterWorkflow = readText(
+    path.join(repoRoot, ".github", "workflows", "release-updater.yml"),
+  );
+  const prepareScript = readText(
+    path.join(repoRoot, "scripts", "prepare-tauri-updater-release.mjs"),
+  );
+  const manifestScript = readText(
+    path.join(repoRoot, "scripts", "generate-tauri-updater-manifest.mjs"),
+  );
+  const verifyScript = readText(path.join(repoRoot, "scripts", "check-tauri-updater-manifest.mjs"));
+  const signScript = readText(path.join(repoRoot, "scripts", "sign-tauri-updater-artifacts.mjs"));
+  const smokeScript = readText(path.join(repoRoot, "scripts", "smoke-tauri-updater-release.mjs"));
+  const updaterDocs = readText(path.join(repoRoot, "docs", "UPDATER.md"));
+
+  if (!packageScripts["release:updater:prepare"]?.includes("prepare-tauri-updater-release.mjs")) {
+    failures.push("package.json must expose release:updater:prepare");
+  }
+  if (!packageScripts["release:updater:sign"]?.includes("sign-tauri-updater-artifacts.mjs")) {
+    failures.push("package.json must expose release:updater:sign");
+  }
+  if (
+    !packageScripts["release:updater:manifest"]?.includes("generate-tauri-updater-manifest.mjs")
+  ) {
+    failures.push("package.json must expose release:updater:manifest");
+  }
+  if (!packageScripts["release:updater:verify"]?.includes("check-tauri-updater-manifest.mjs")) {
+    failures.push("package.json must expose release:updater:verify");
+  }
+  if (!packageScripts["release:updater:smoke"]?.includes("smoke-tauri-updater-release.mjs")) {
+    failures.push("package.json must expose release:updater:smoke");
+  }
+  if (!packageScripts["release:linux:updater"]?.includes("release:updater:sign")) {
+    failures.push("package.json must expose release:linux:updater with final artifact signing");
+  }
+  if (!packageDependencies["@tauri-apps/plugin-updater"]) {
+    failures.push("package.json must include @tauri-apps/plugin-updater for UI checks");
+  }
+  if (!packageDependencies["@tauri-apps/plugin-process"]) {
+    failures.push("package.json must include @tauri-apps/plugin-process for updater relaunch");
+  }
+  if (!tauriCargo.includes("tauri-plugin-updater")) {
+    failures.push("src-tauri/Cargo.toml must include tauri-plugin-updater");
+  }
+  if (!tauriCargo.includes("tauri-plugin-process")) {
+    failures.push("src-tauri/Cargo.toml must include tauri-plugin-process");
+  }
+  if (!tauriLib.includes("tauri_plugin_updater::Builder::new().build()")) {
+    failures.push("Tauri builder must register tauri-plugin-updater");
+  }
+  if (!tauriLib.includes("tauri_plugin_process::init()")) {
+    failures.push("Tauri builder must register tauri-plugin-process for relaunch");
+  }
+  if (!capabilities.includes('"updater:default"')) {
+    failures.push("Tauri capabilities must expose updater:default");
+  }
+  if (!capabilities.includes('"process:allow-restart"')) {
+    failures.push("Tauri capabilities must expose process:allow-restart only");
+  }
+  if (JSON.stringify(tauriConfig).includes('"updater"')) {
+    failures.push("default tauri.conf.json must not hardcode updater pubkey/endpoints");
+  }
+  for (const expected of [
+    "TAURI_UPDATER_PUBKEY",
+    "TAURI_UPDATER_ENDPOINTS",
+    "createUpdaterArtifacts",
+    "tauri.updater.generated.conf.json",
+  ]) {
+    if (!prepareScript.includes(expected)) {
+      failures.push(`prepare-tauri-updater-release missing marker: ${expected}`);
+    }
+  }
+  for (const expected of [
+    "TAURI_UPDATER_ARTIFACT_BASE_URL",
+    ".appimage",
+    ".appimage.tar.gz",
+    ".msi",
+    ".exe",
+    ".sig",
+    "latest.json",
+  ]) {
+    if (!manifestScript.includes(expected)) {
+      failures.push(`generate-tauri-updater-manifest missing marker: ${expected}`);
+    }
+  }
+  for (const expected of [
+    "TAURI_UPDATER_ARTIFACT_BASE_URL",
+    "latest.json",
+    ".appimage",
+    ".exe",
+    ".sig",
+    "signature does not match",
+  ]) {
+    if (!verifyScript.includes(expected)) {
+      failures.push(`check-tauri-updater-manifest missing marker: ${expected}`);
+    }
+  }
+  for (const expected of ["TAURI_SIGNING_PRIVATE_KEY", "tauri", "signer", "sign", "--password"]) {
+    if (!signScript.includes(expected)) {
+      failures.push(`sign-tauri-updater-artifacts missing marker: ${expected}`);
+    }
+  }
+  for (const expected of [
+    "latest.json",
+    ".sig",
+    "IMGCONVERT_PACKAGE_CONVERT_SMOKE",
+    "APPIMAGE_EXTRACT_AND_RUN",
+    "--no-run",
+  ]) {
+    if (!smokeScript.includes(expected)) {
+      failures.push(`smoke-tauri-updater-release missing marker: ${expected}`);
+    }
+  }
+  for (const expected of [
+    "checkTauriUpdate",
+    "downloadAndInstall",
+    "relaunch",
+    "checkForAppUpdate",
+    "installAppUpdate",
+  ]) {
+    if (!stateTs.includes(expected) && !updateDialog.includes(expected)) {
+      failures.push(`updater UI missing marker: ${expected}`);
+    }
+  }
+  for (const expected of [
+    "workflow_dispatch:",
+    "publish_release",
+    "TAURI_UPDATER_PUBKEY",
+    "TAURI_SIGNING_PRIVATE_KEY",
+    "releases/latest/download/latest.json",
+    "release:updater:verify",
+    "IMGCONVERT_PACKAGE_CONVERT_SMOKE",
+    "softprops/action-gh-release",
+  ]) {
+    if (!updaterWorkflow.includes(expected)) {
+      failures.push(`release-updater.yml missing marker: ${expected}`);
+    }
+  }
+  for (const expected of [
+    "pnpm tauri signer generate --ci",
+    "TAURI_UPDATER_PUBKEY",
+    "TAURI_SIGNING_PRIVATE_KEY",
+    "releases/latest/download/latest.json",
+    "release:updater:verify",
+    "release:updater:smoke",
+  ]) {
+    if (!updaterDocs.includes(expected)) {
+      failures.push(`docs/UPDATER.md missing marker: ${expected}`);
+    }
+  }
+}
+
+function checkFlatpakHeicExtensionGuardrails() {
+  const packageScripts = packageJson.scripts ?? {};
+  const extensionDir = path.join(repoRoot, "packaging", "flatpak", "extensions", "heic");
+  const manifest = readText(path.join(extensionDir, "com.ivmm.imgconvert.Codecs.Heic.yml"));
+  const codecManifest = readText(path.join(extensionDir, "imgconvert-codec-heic.json"));
+  const helper = readText(path.join(extensionDir, "imgconvert-heic-helper.sh"));
+  const checkScript = readText(path.join(repoRoot, "scripts", "check-flatpak-heic-extension.mjs"));
+  const smokeScript = readText(path.join(repoRoot, "scripts", "smoke-flatpak-heic-extension.mjs"));
+
+  if (
+    !packageScripts["release:flatpak:heic:verify"]?.includes("check-flatpak-heic-extension.mjs")
+  ) {
+    failures.push("package.json must expose release:flatpak:heic:verify");
+  }
+  if (!packageScripts["release:flatpak:heic:smoke"]?.includes("smoke-flatpak-heic-extension.mjs")) {
+    failures.push("package.json must expose release:flatpak:heic:smoke");
+  }
+  if (
+    !packageScripts["release:flatpak:heic:download-check"]?.includes(
+      "smoke-flatpak-heic-extension.mjs --download-only",
+    )
+  ) {
+    failures.push("package.json must expose release:flatpak:heic:download-check");
+  }
+  if (!packageScripts["release:flatpak:verify"]?.includes("check-flatpak-heic-extension.mjs")) {
+    failures.push("release:flatpak:verify must include HEIC extension static guardrails");
+  }
+  for (const expected of [
+    "build-extension: true",
+    "libde265-1.1.1.tar.gz",
+    "libheif-1.23.1.tar.gz",
+    "- -DWITH_LIBDE265=ON",
+    "- -DWITH_X265=OFF",
+    "- -DENABLE_ENCODER=OFF",
+    "share/licenses/com.ivmm.imgconvert.Codecs.Heic",
+  ]) {
+    if (!manifest.includes(expected)) {
+      failures.push(`Flatpak HEIC extension manifest missing marker: ${expected}`);
+    }
+  }
+  for (const expected of [
+    '"writable": []',
+    '"command": "bin/imgconvert-heic-helper"',
+    '"{metadata}"',
+  ]) {
+    if (!codecManifest.includes(expected)) {
+      failures.push(`Flatpak HEIC codec manifest missing marker: ${expected}`);
+    }
+  }
+  for (const expected of ["set -eu", 'heif-convert "$input" "$output"', '{"version":1}']) {
+    if (!helper.includes(expected)) {
+      failures.push(`Flatpak HEIC helper wrapper missing marker: ${expected}`);
+    }
+  }
+  for (const expected of [
+    "libde265-1.1.1.tar.gz",
+    "libheif-1.23.1.tar.gz",
+    "ENABLE_ENCODER=OFF",
+    "WITH_X265=OFF",
+  ]) {
+    if (!checkScript.includes(expected)) {
+      failures.push(`check-flatpak-heic-extension missing marker: ${expected}`);
+    }
+  }
+  for (const expected of ["flatpak-builder", "--download-only", "--allow-missing-runtimes"]) {
+    if (!smokeScript.includes(expected)) {
+      failures.push(`smoke-flatpak-heic-extension missing marker: ${expected}`);
+    }
+  }
+}
+
 function checkMacos() {
   requireBundleIcon(".icns", "macOS");
   checkMacosRuntimeGuardrails();
@@ -112,6 +714,9 @@ function checkMacos() {
 
 function checkMacosRuntimeGuardrails() {
   const packageScripts = packageJson.scripts ?? {};
+  if (!packageScripts["bench:platform"]?.includes("benchmark-platform.mjs")) {
+    failures.push("package.json must expose bench:platform for AVIF/WebP platform timing");
+  }
   if (!packageScripts["bench:avif:macos"]?.includes("benchmark-macos-avif.mjs")) {
     failures.push("package.json must expose bench:avif:macos for Apple Silicon AVIF timing");
   }

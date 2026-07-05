@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "imgconvert-core-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+imgconvert-core = { path = "../crates/imgconvert-core" }
+libfuzzer-sys = "0.4"
+
+[[bin]]
+name = "decode_pipeline"
+path = "fuzz_targets/decode_pipeline.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "convert_pipeline"
+path = "fuzz_targets/convert_pipeline.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "metadata_semantics"
+path = "fuzz_targets/metadata_semantics.rs"
+test = false
+doc = false
+bench = false

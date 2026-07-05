@@ -63,7 +63,7 @@
 |---|---|---|
 | 定位 / 许可 | WebP/AVIF/JXL 转换器,直接分发 / **MIT** | 通用批量转换+压缩,面向商店 / **Apache-2.0** |
 | 前端 / 包管理 | Vue 3 + Vite / **pnpm** | Svelte 5 + shadcn-svelte / **pnpm** |
-| **AVIF** | **`libavif-sys`(codec-rav1e)** + 可选 vcpkg libaom | **`libavif-sys`(codec-rav1e)** ← 采用其路线 |
+| **AVIF** | **`libavif-sys`(codec-rav1e)** + 可选 vcpkg libaom | **`libavif-sys`(rav1e 有损 + aom 无损)** ← 采用其容器路线并补齐真无损后端 |
 | JPEG | **jpegli**(libjxl 系,BSD-3) | **mozjpeg**(IJG/BSD) |
 | WebP / PNG | libwebp-sys / oxipng | webp / oxipng + **color_quant**(避 imagequant) |
 | JPEG XL | **支持**(jxl-sys) | **砍掉**(libjxl 重型,过早) |
@@ -74,7 +74,7 @@
 | 元数据 / 质量 | 不强调 | **ICC/EXIF 透传、auto-quality(ssimulacra2)、代际防护** |
 | 发布 | GitHub Releases | **Linux 优先**(.deb/.rpm/AppImage+Flathub)+ 商店留门 |
 
-**直接借鉴**:① AVIF=libavif-sys(codec-rav1e)及其「rav1e 构建可靠、规避 libaom NASM 坑」的理由;② HEIC magic-byte 检测 + 系统原生解码(`command.rs:55-80`,全网唯一参考);③ 每图 spawn_blocking + 进度回调 + 可取消批处理状态机思路。
+**直接借鉴**:① AVIF=libavif-sys 容器路线及其「rav1e 有损构建可靠」的理由;真无损因 rav1e 上游不支持而补 AOM 后端。② HEIC magic-byte 检测 + 系统原生解码(`command.rs:55-80`,全网唯一参考);③ 每图 spawn_blocking + 进度回调 + 可取消批处理状态机思路。
 **刻意分道**:Apache 替 MIT(专利授权);mozjpeg 替 jpegli(避 libjxl 重依赖);**传路径不传字节**(修其内存反面教材);真并发 + maxThreads=1;补元数据保真 + 自动质量;上架工程化(cargo-about + 应用内许可页 + 商店留门);Svelte/pnpm + cargo-dist 静态链接(它 Vue/pnpm + vcpkg)。
 
 ---
@@ -164,7 +164,7 @@
 | PNG 有损量化 | ⛔ ~~`imagequant`(GPL)~~ → `color_quant`(NeuQuant)/`image` 内置 | MIT |
 | JPEG | `mozjpeg`(mozjpeg-sys) | IJG/BSD |
 | WebP | `webp`(libwebp) | Apache/MIT;BSD |
-| AVIF | `libavif-sys`(codec-rav1e)/libavif | BSD-2 |
+| AVIF | `libavif-sys`(rav1e/aom)/libavif | BSD-2 / BSD |
 | 质量判定 | ⛔ ~~`dssim`(AGPL)~~ → `ssimulacra2`(宽松,待核) | — |
 | 通用解码/缩放/TIFF | `image` + `fast_image_resize` | MIT/Apache |
 

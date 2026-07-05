@@ -19,6 +19,7 @@
   import QueueItem from "$lib/components/QueueItem.svelte";
   import SettingsBar from "$lib/components/SettingsBar.svelte";
   import Topbar from "$lib/components/Topbar.svelte";
+  import UpdateDialog from "$lib/components/UpdateDialog.svelte";
   import {
     addDemoItems,
     cancelConversion,
@@ -45,6 +46,7 @@
   );
   let legalOpen = $state(false);
   let pluginDiagnosticsOpen = $state(false);
+  let updateOpen = $state(false);
   const progressLabel = $derived(
     queue.length
       ? `${doneCount}/${queue.length} 完成${skippedCount ? ` · ${skippedCount} 跳过` : ""}${errorCount ? ` · ${errorCount} 错误` : ""}`
@@ -104,12 +106,13 @@
       <Topbar
         onOpenLegal={() => (legalOpen = true)}
         onOpenPluginDiagnostics={() => (pluginDiagnosticsOpen = true)}
+        onOpenUpdates={() => (updateOpen = true)}
       />
     </div>
 
     <div class="min-h-0 flex-1 overflow-y-auto">
       <div
-        class="mx-auto grid w-full max-w-[1500px] grid-cols-1 gap-4 px-4 py-4 pb-28 xl:grid-cols-[minmax(0,1fr)_390px] xl:items-start 2xl:grid-cols-[minmax(0,1fr)_420px]"
+        class="mx-auto grid w-full max-w-[1500px] grid-cols-1 gap-4 px-4 py-4 pb-28 min-[720px]:grid-cols-[minmax(0,1fr)_340px] min-[720px]:items-start min-[880px]:grid-cols-[minmax(0,1fr)_360px] xl:grid-cols-[minmax(0,1fr)_390px] 2xl:grid-cols-[minmax(0,1fr)_420px]"
       >
         <section class="flex min-w-0 flex-col gap-4">
           <Dropzone />
@@ -140,7 +143,7 @@
             </div>
 
             <ul
-              class="grid grid-cols-1 content-start gap-3 md:grid-cols-2 2xl:grid-cols-3"
+              class="grid grid-cols-1 content-start gap-3 lg:grid-cols-2 2xl:grid-cols-3"
               aria-label="转换队列"
             >
               {#each queue as item (item.key)}
@@ -156,7 +159,7 @@
           </section>
         </section>
 
-        <aside class="min-w-0 xl:sticky xl:top-4">
+        <aside class="min-w-0 min-[720px]:sticky min-[720px]:top-4">
           <SettingsBar variant="panel" />
         </aside>
       </div>
@@ -228,5 +231,6 @@
   </main>
 
   <PluginDiagnosticsDialog bind:open={pluginDiagnosticsOpen} />
+  <UpdateDialog bind:open={updateOpen} />
   <LegalDialog bind:open={legalOpen} />
 </IconContext>
