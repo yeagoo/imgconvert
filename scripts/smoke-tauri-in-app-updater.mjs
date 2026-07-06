@@ -257,8 +257,10 @@ async function runGuiUpdaterSmoke(oldArtifactPath, expectedHash) {
     await sleep(2_000);
     const geometry = windowGeometry(windowId, appEnv);
     clickUpdateButton(windowId, geometry, appEnv);
+    captureScreenshot(appEnv, "after-update-click.png");
     await sleep(8_000);
     clickInstallButton(windowId, geometry, appEnv);
+    captureScreenshot(appEnv, "after-install-click.png");
     await waitForUpdatedArtifact(oldArtifactPath, expectedHash, app, stdout, stderr, appEnv);
     closeImgConvertWindows(appEnv);
     runUpdatedArtifactSmoke(oldArtifactPath);
@@ -347,7 +349,13 @@ function windowGeometry(windowId, env, { allowFailure = false } = {}) {
 function clickUpdateButton(windowId, geometry, env) {
   const x = relativeCoordinate(geometry.WIDTH - options.updateButtonOffsetX, geometry.WIDTH);
   const y = relativeCoordinate(options.updateButtonOffsetY, geometry.HEIGHT);
-  runTool("xdotool", ["mousemove", "--window", windowId, String(x), String(y), "click", "1"], env);
+  focusWindow(windowId, env);
+  console.log(`clicking update button at ${x},${y}`);
+  runTool(
+    "xdotool",
+    ["mousemove", "--sync", "--window", windowId, String(x), String(y), "click", "1"],
+    env,
+  );
 }
 
 function clickInstallButton(windowId, geometry, env) {
@@ -359,11 +367,22 @@ function clickInstallButton(windowId, geometry, env) {
     Math.round(geometry.HEIGHT / 2 + options.installButtonOffsetY),
     geometry.HEIGHT,
   );
-  runTool("xdotool", ["mousemove", "--window", windowId, String(x), String(y), "click", "1"], env);
+  focusWindow(windowId, env);
+  console.log(`clicking install button at ${x},${y}`);
+  runTool(
+    "xdotool",
+    ["mousemove", "--sync", "--window", windowId, String(x), String(y), "click", "1"],
+    env,
+  );
 }
 
 function relativeCoordinate(value, max) {
   return Math.min(Math.max(1, value), Math.max(1, max - 1));
+}
+
+function focusWindow(windowId, env) {
+  runTool("xdotool", ["windowactivate", "--sync", windowId], env, { allowFailure: true });
+  runTool("xdotool", ["windowfocus", "--sync", windowId], env, { allowFailure: true });
 }
 
 async function waitForUpdatedArtifact(artifactPath, expectedHash, app, stdout, stderr, env) {
@@ -418,11 +437,11 @@ function closeImgConvertWindows(env) {
   });
 }
 
-function captureScreenshot(env) {
+function captureScreenshot(env, name = "in-app-updater-failure.png") {
   if (!commandExists("import")) {
     return;
   }
-  const output = path.join(options.outputDir, "in-app-updater-failure.png");
+  const output = path.join(options.outputDir, name);
   runTool("import", ["-window", "root", output], env, { allowFailure: true });
 }
 

@@ -60,7 +60,7 @@ jobs:
             --platform=linux-x86_64 \
             --require-gui
       - uses: actions/upload-artifact@v7
-        if: always()
+        if: failure()
         with:
           name: updater-upgrade-smoke-${{ inputs.from_tag }}-${{ inputs.to_tag }}
           if-no-files-found: ignore
