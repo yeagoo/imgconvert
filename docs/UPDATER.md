@@ -92,6 +92,34 @@ On a different CPU architecture, add `--no-run` to validate `latest.json`,
 artifact download, and `.sig` consistency without executing the downloaded
 AppImage.
 
+## In-app upgrade smoke
+
+The cheap preflight validates that an old updater-enabled release can see a
+newer public `latest.json` and that both old/new AppImage signatures match the
+release manifests:
+
+```bash
+pnpm run release:updater:upgrade-smoke:eligibility
+```
+
+The real GUI smoke requires a Linux x86_64 desktop/X11 environment because it
+launches the old AppImage, clicks the application's update dialog, waits for the
+AppImage to be replaced by the latest release artifact, then runs the hidden
+package conversion smoke on the updated file:
+
+```bash
+pnpm run release:updater:upgrade-smoke -- --from-tag=v0.1.0 --to-tag=v0.1.1
+```
+
+On GitHub Actions, run the manual workflow `Updater Upgrade Smoke` with
+`confirm_runner=true`. It installs `Xvfb` and `xdotool`, then executes the same
+script on an Ubuntu x86_64 runner.
+
+Because already-published old releases cannot receive new test hooks, the
+`v0.1.0 -> v0.1.1` smoke uses UI clicks. Future old versions that already
+contain this script and workflow can reuse the same upgrade smoke without
+changing the old binary.
+
 ## GitHub Actions
 
 Run the manual workflow `Updater Release` with:

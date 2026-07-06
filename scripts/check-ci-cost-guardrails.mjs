@@ -12,17 +12,20 @@ const packageJson = readJson(path.join(repoRoot, "package.json"));
 const ci = readWorkflow("ci.yml");
 const linuxRelease = readWorkflow("release-linux.yml");
 const updaterRelease = readWorkflow("release-updater.yml");
+const updaterUpgradeSmoke = readWorkflow("updater-upgrade-smoke.yml");
 const macosSmoke = readWorkflow("macos-smoke.yml");
 const windowsSmoke = readWorkflow("windows-smoke.yml");
 
 checkManualOnly("ci.yml", ci);
 checkManualOnly("release-linux.yml", linuxRelease);
 checkManualOnly("release-updater.yml", updaterRelease);
+checkManualOnly("updater-upgrade-smoke.yml", updaterUpgradeSmoke);
 checkManualOnly("macos-smoke.yml", macosSmoke);
 checkManualOnly("windows-smoke.yml", windowsSmoke);
 checkCiWorkflow();
 checkLinuxReleaseWorkflow();
 checkUpdaterReleaseWorkflow();
+checkUpdaterUpgradeSmokeWorkflow();
 checkPaidPlatformWorkflow("macos-smoke.yml", macosSmoke, "macOS", "macos-15");
 checkPaidPlatformWorkflow("windows-smoke.yml", windowsSmoke, "Windows", "windows-latest");
 
@@ -108,6 +111,28 @@ function checkUpdaterReleaseWorkflow() {
   }
   if (!updaterRelease.includes("inputs.publish_release")) {
     failures.push("release-updater.yml publishing must be gated by publish_release");
+  }
+}
+
+function checkUpdaterUpgradeSmokeWorkflow() {
+  requireBooleanInputDefault(
+    updaterUpgradeSmoke,
+    "confirm_runner",
+    false,
+    "updater-upgrade-smoke.yml",
+  );
+
+  if (!updaterUpgradeSmoke.includes("inputs.confirm_runner")) {
+    failures.push("updater-upgrade-smoke.yml must gate the job by confirm_runner");
+  }
+  if (!updaterUpgradeSmoke.includes("runs-on: ubuntu-24.04")) {
+    failures.push("updater-upgrade-smoke.yml must keep the GitHub-hosted runner explicit");
+  }
+  if (!updaterUpgradeSmoke.includes("smoke-tauri-in-app-updater.mjs")) {
+    failures.push("updater-upgrade-smoke.yml must run the in-app updater smoke script");
+  }
+  if (!updaterUpgradeSmoke.includes("xdotool") || !updaterUpgradeSmoke.includes("xvfb")) {
+    failures.push("updater-upgrade-smoke.yml must install xdotool and xvfb");
   }
 }
 

@@ -485,7 +485,13 @@ function checkTauriUpdaterGuardrails() {
   const signScript = readText(path.join(repoRoot, "scripts", "sign-tauri-updater-artifacts.mjs"));
   const linuxUpdaterScript = readText(path.join(repoRoot, "scripts", "release-linux-updater.mjs"));
   const smokeScript = readText(path.join(repoRoot, "scripts", "smoke-tauri-updater-release.mjs"));
+  const upgradeSmokeScript = readText(
+    path.join(repoRoot, "scripts", "smoke-tauri-in-app-updater.mjs"),
+  );
   const updaterDocs = readText(path.join(repoRoot, "docs", "UPDATER.md"));
+  const upgradeSmokeWorkflow = readText(
+    path.join(repoRoot, ".github", "workflows", "updater-upgrade-smoke.yml"),
+  );
 
   if (!packageScripts["release:updater:prepare"]?.includes("prepare-tauri-updater-release.mjs")) {
     failures.push("package.json must expose release:updater:prepare");
@@ -503,6 +509,14 @@ function checkTauriUpdaterGuardrails() {
   }
   if (!packageScripts["release:updater:smoke"]?.includes("smoke-tauri-updater-release.mjs")) {
     failures.push("package.json must expose release:updater:smoke");
+  }
+  if (!packageScripts["release:updater:upgrade-smoke"]?.includes("--require-gui")) {
+    failures.push("package.json must expose release:updater:upgrade-smoke as a real GUI smoke");
+  }
+  if (
+    !packageScripts["release:updater:upgrade-smoke:eligibility"]?.includes("--eligibility-only")
+  ) {
+    failures.push("package.json must expose release:updater:upgrade-smoke:eligibility");
   }
   if (!packageScripts["release:linux:updater"]?.includes("release-linux-updater.mjs")) {
     failures.push("package.json must expose release:linux:updater via release-linux-updater.mjs");
@@ -601,6 +615,22 @@ function checkTauriUpdaterGuardrails() {
     }
   }
   for (const expected of [
+    "--from-tag",
+    "--to-tag",
+    "--eligibility-only",
+    "--require-gui",
+    "Xvfb",
+    "xdotool",
+    "clickInstallButton",
+    "waitForUpdatedArtifact",
+    "IMGCONVERT_PACKAGE_CONVERT_SMOKE",
+    "releases/latest/download/latest.json",
+  ]) {
+    if (!upgradeSmokeScript.includes(expected)) {
+      failures.push(`smoke-tauri-in-app-updater missing marker: ${expected}`);
+    }
+  }
+  for (const expected of [
     "checkTauriUpdate",
     "downloadAndInstall",
     "relaunch",
@@ -626,12 +656,25 @@ function checkTauriUpdaterGuardrails() {
     }
   }
   for (const expected of [
+    "workflow_dispatch:",
+    "confirm_runner",
+    "ubuntu-24.04",
+    "xdotool",
+    "xvfb",
+    "smoke-tauri-in-app-updater.mjs",
+  ]) {
+    if (!upgradeSmokeWorkflow.includes(expected)) {
+      failures.push(`updater-upgrade-smoke.yml missing marker: ${expected}`);
+    }
+  }
+  for (const expected of [
     "pnpm tauri signer generate --ci",
     "TAURI_UPDATER_PUBKEY",
     "TAURI_SIGNING_PRIVATE_KEY",
     "releases/latest/download/latest.json",
     "release:updater:verify",
     "release:updater:smoke",
+    "release:updater:upgrade-smoke",
   ]) {
     if (!updaterDocs.includes(expected)) {
       failures.push(`docs/UPDATER.md missing marker: ${expected}`);

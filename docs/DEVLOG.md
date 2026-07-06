@@ -5,6 +5,22 @@
 
 ---
 
+## 2026-07-06 — Linux 0.1.1 包重建与 in-app updater 升级 smoke
+
+Codex 收尾 `v0.1.1` Linux 发布残留和真实 updater 升级验证入口:
+
+- **Linux 0.1.1 bundle 重建**:重新运行 `pnpm run release:linux`,清理旧 `.deb/.rpm/AppImage` 后生成 `ImgConvert_0.1.1_arm64.deb`、`ImgConvert-0.1.1-1.aarch64.rpm`、`ImgConvert_0.1.1_aarch64.AppImage` 和 `SHA256SUMS`;artifact verifier 确认三类包均为 `0.1.1`,AppImage scrub 后不捆入 deny-list `libgcrypt.so.20`。
+- **升级资格 smoke**:新增 `scripts/smoke-tauri-in-app-updater.mjs` 与 `release:updater:upgrade-smoke:eligibility`,会下载旧 release manifest/artifact、公开 `releases/latest/download/latest.json`、新 artifact 与 `.sig`,确认 `v0.1.0 -> v0.1.1` 版本递增且签名一致。
+- **真实 in-app GUI smoke**:新增 `release:updater:upgrade-smoke` 和手动 GitHub Actions workflow `Updater Upgrade Smoke`。在 Linux x86_64 + Xvfb/xdotool 环境中,脚本启动旧 AppImage,点击“应用更新”与“安装并重启”,等待旧 AppImage 被最新 artifact 替换,再运行隐藏包内转换 smoke。
+- **成本护栏**:`updater-upgrade-smoke.yml` 只允许 `workflow_dispatch`,且 job 需要 `confirm_runner=true`;`ci:cost:check` 会防止该 workflow 被改成自动触发。
+
+边界:
+
+- 已发布的 `v0.1.0` 旧包无法再加入测试 hook,所以本次真实升级 smoke 必须通过 x86_64 GUI 自动点击或人工点击验证。
+- arm64 本机只能跑升级资格检查和本机 arm64 AppImage 包内 smoke,不能执行 GitHub 发布的 x86_64 AppImage。
+
+---
+
 ## 2026-07-05 — Tauri updater 真发布闭环:本地 key 注入与 latest.json 生成
 
 Codex review updater 真发布路径后修复一个实际构建缺口:`tauri build` 在开启 updater artifacts 时只读取 `TAURI_SIGNING_PRIVATE_KEY` 私钥内容,不能只给 `TAURI_SIGNING_PRIVATE_KEY_PATH`。

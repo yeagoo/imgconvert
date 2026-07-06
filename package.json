@@ -59,6 +59,8 @@
     "release:updater:manifest": "node scripts/generate-tauri-updater-manifest.mjs",
     "release:updater:verify": "node scripts/check-tauri-updater-manifest.mjs",
     "release:updater:smoke": "node scripts/smoke-tauri-updater-release.mjs",
+    "release:updater:upgrade-smoke": "node scripts/smoke-tauri-in-app-updater.mjs --require-gui",
+    "release:updater:upgrade-smoke:eligibility": "node scripts/smoke-tauri-in-app-updater.mjs --eligibility-only",
     "release:linux:updater": "node scripts/release-linux-updater.mjs",
     "release:updater:local": "pnpm run release:linux:updater && pnpm run release:updater:manifest && pnpm run release:updater:verify",
     "release:flatpak:prepare": "node scripts/prepare-flatpak-release.mjs",

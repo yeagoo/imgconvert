@@ -77,6 +77,10 @@ function buildReport() {
       "Generate main package and HEIC extension PR workspaces for Flathub review.",
     ),
     commandReadiness(
+      "release:updater:upgrade-smoke:eligibility",
+      "Verify old/new updater release metadata before the real GUI upgrade smoke.",
+    ),
+    commandReadiness(
       "test:image-quality",
       "Deterministic generated image quality/corruption suite.",
     ),
@@ -151,6 +155,7 @@ function buildReport() {
     windowsSigningPrerequisite(),
     windowsStorePrerequisite(),
     updaterPrerequisite(),
+    updaterUpgradeSmokePrerequisite(),
     flathubMainPrerequisite(),
     flathubHeicPrerequisite(),
     macosBenchmarkPrerequisite(),
@@ -346,6 +351,25 @@ function updaterPrerequisite() {
   };
 }
 
+function updaterUpgradeSmokePrerequisite() {
+  const guiReady =
+    process.platform === "linux" &&
+    process.arch === "x64" &&
+    commandExists("Xvfb") &&
+    commandExists("xdotool");
+  return {
+    id: "tauri-in-app-updater-smoke",
+    label: "Tauri in-app updater upgrade smoke",
+    status: guiReady ? "ready" : "external",
+    description:
+      "Launches the old x86_64 AppImage, clicks the app update dialog, waits for replacement, then runs package smoke.",
+    command: "pnpm run release:updater:upgrade-smoke",
+    detail: guiReady
+      ? "current host has linux/x64, Xvfb, and xdotool"
+      : "requires linux/x64 desktop runner with Xvfb and xdotool; use the manual Updater Upgrade Smoke workflow",
+  };
+}
+
 function flathubHeicPrerequisite() {
   const sampleConfigured = envIsSet("IMGCONVERT_FLATPAK_HEIC_SMOKE_INPUT");
   return {
@@ -522,6 +546,10 @@ function envSet(envNames) {
 
 function envIsSet(name) {
   return Boolean(process.env[name]?.trim());
+}
+
+function commandExists(command) {
+  return existsSync(`/usr/bin/${command}`) || existsSync(`/usr/local/bin/${command}`);
 }
 
 function envDetail(envNames) {
