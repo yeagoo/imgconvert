@@ -12,6 +12,7 @@ Codex 收尾 `v0.1.1` Linux 发布残留和真实 updater 升级验证入口:
 - **Linux 0.1.1 bundle 重建**:重新运行 `pnpm run release:linux`,清理旧 `.deb/.rpm/AppImage` 后生成 `ImgConvert_0.1.1_arm64.deb`、`ImgConvert-0.1.1-1.aarch64.rpm`、`ImgConvert_0.1.1_aarch64.AppImage` 和 `SHA256SUMS`;artifact verifier 确认三类包均为 `0.1.1`,AppImage scrub 后不捆入 deny-list `libgcrypt.so.20`。
 - **升级资格 smoke**:新增 `scripts/smoke-tauri-in-app-updater.mjs` 与 `release:updater:upgrade-smoke:eligibility`,会下载旧 release manifest/artifact、公开 `releases/latest/download/latest.json`、新 artifact 与 `.sig`,确认 `v0.1.0 -> v0.1.1` 版本递增且签名一致。
 - **真实 in-app GUI smoke**:新增 `release:updater:upgrade-smoke` 和手动 GitHub Actions workflow `Updater Upgrade Smoke`。在 Linux x86_64 + Xvfb/xdotool 环境中,脚本启动旧 AppImage,点击“应用更新”与“安装并重启”,等待旧 AppImage 被最新 artifact 替换,再运行隐藏包内转换 smoke。
+- **GitHub x86_64 实跑**:`Updater Upgrade Smoke` run `28764690606` 已通过,日志确认 `Tauri in-app updater smoke passed: 0.1.0 -> 0.1.1`。
 - **成本护栏**:`updater-upgrade-smoke.yml` 只允许 `workflow_dispatch`,且 job 需要 `confirm_runner=true`;`ci:cost:check` 会防止该 workflow 被改成自动触发。
 
 边界:
