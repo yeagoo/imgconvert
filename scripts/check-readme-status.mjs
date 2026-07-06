@@ -60,6 +60,7 @@ function checkReadmeIsCurrent() {
 function checkReadmeDocumentsReleaseEntrypoints() {
   for (const expected of [
     "pnpm run release:readiness",
+    "pnpm run release:readiness:github:ready",
     "pnpm run release:platform:check",
     "docs/ROADMAP.md",
     "docs/ENGINE.md",

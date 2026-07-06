@@ -11,6 +11,7 @@
 
 - **发布范围**:第一期只发布 Linux `.deb/.rpm/AppImage`、AppImage updater signature、`latest.json` 与 `SHA256SUMS`;Flathub、Mac App Store、Microsoft Store、MSIX、MAS notarization/submission 全部后移。
 - **readiness scope**:`pnpm run release:readiness` 默认改为 GitHub-only 范围;`pnpm run release:readiness:all` / `--scope=all` 才显示 Flathub、macOS、Windows、商店和长期 benchmark/corpus 项。
+- **发布硬闸门**:新增 `pnpm run release:readiness:github:ready`,使用 `--require-publishable` 要求第一期 in-scope 项全部 ready;普通 `release:readiness` 仍保持只读观察,不会替代发布前硬校验。
 - **文档同步**:README、ROADMAP、ENGINE、UPDATER 均明确“GitHub Releases first”,商店/Flathub 脚本仍保留为后续阶段和架构护栏,但不作为第一期发布阻塞项。
 
 边界:

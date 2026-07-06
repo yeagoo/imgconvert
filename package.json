@@ -37,6 +37,7 @@
     "architecture:check": "node scripts/check-architecture-guardrails.mjs",
     "release:readiness": "node scripts/report-release-readiness.mjs",
     "release:readiness:github": "node scripts/report-release-readiness.mjs --scope=github",
+    "release:readiness:github:ready": "node scripts/report-release-readiness.mjs --scope=github --require-publishable",
     "release:readiness:all": "node scripts/report-release-readiness.mjs --scope=all",
     "docs:check": "node scripts/check-readme-status.mjs",
     "release:readiness:check": "pnpm run docs:check && node scripts/report-release-readiness.mjs --check",

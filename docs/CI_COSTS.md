@@ -32,6 +32,16 @@ It does not build artifacts or trigger GitHub Actions. It only reports which
 local checks/artifacts are present and which remaining items require external
 credentials, paid runners, or store review.
 
+Before publishing the first GitHub Releases batch, run the stricter local gate:
+
+```bash
+pnpm run release:readiness:github:ready
+```
+
+That command is still local and read-only, but it exits non-zero if any
+GitHub-release in-scope artifact, updater signature, manifest, or prerequisite
+is not ready.
+
 Use the explicit expensive toggles only when you need the artifact or platform
 signal from that run:
 

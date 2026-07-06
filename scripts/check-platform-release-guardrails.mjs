@@ -142,6 +142,9 @@ function checkReleaseReadinessGuardrails() {
   ) {
     failures.push("package.json must expose release:readiness:check");
   }
+  if (!packageScripts["release:readiness:github:ready"]?.includes("--require-publishable")) {
+    failures.push("package.json must expose release:readiness:github:ready");
+  }
   if (!packageScripts["release:platform:check"]?.includes("release:readiness:check")) {
     failures.push("release:platform:check must run release:readiness:check");
   }
@@ -149,6 +152,7 @@ function checkReleaseReadinessGuardrails() {
     "--json",
     "--check",
     "--require-ready",
+    "--require-publishable",
     "docs:check",
     "TAURI_UPDATER_PUBKEY",
     "TAURI_SIGNING_PRIVATE_KEY",

@@ -11,6 +11,7 @@ const options = {
   json: false,
   check: false,
   requireReady: false,
+  requirePublishable: false,
   scope: "github",
 };
 
@@ -23,6 +24,8 @@ for (const arg of process.argv.slice(2)) {
     options.check = true;
   } else if (arg === "--require-ready") {
     options.requireReady = true;
+  } else if (arg === "--require-publishable") {
+    options.requirePublishable = true;
   } else if (arg.startsWith("--scope=")) {
     options.scope = arg.slice("--scope=".length);
     if (!["github", "all"].includes(options.scope)) {
@@ -57,7 +60,16 @@ if (options.check) {
   printReport(report);
 }
 
-if (options.requireReady && report.summary.blocking > 0) {
+if (options.requirePublishable) {
+  const publishBlocking = inScopeItems(report).filter((item) => item.status !== "ready");
+  if (publishBlocking.length > 0) {
+    console.error("release scope is not publishable:");
+    for (const item of publishBlocking) {
+      console.error(`- [${item.status}] ${item.label}: ${item.detail}`);
+    }
+    process.exit(1);
+  }
+} else if (options.requireReady && report.summary.blocking > 0) {
   process.exit(1);
 }
 
@@ -173,41 +185,31 @@ function githubArtifacts() {
       "Linux .deb",
       "release:linux",
       [artifactDir("release", "bundle", "deb")],
-      hasExtension(".deb"),
+      hasExtensionAndVersion(".deb"),
     ),
     artifactReadiness(
       "linux-rpm",
       "Linux .rpm",
       "release:linux",
       [artifactDir("release", "bundle", "rpm")],
-      hasExtension(".rpm"),
+      hasExtensionAndVersion(".rpm"),
     ),
     artifactReadiness(
       "linux-appimage",
       "Linux AppImage",
       "release:linux",
       [artifactDir("release", "bundle", "appimage")],
-      hasExtension(".appimage"),
+      hasExtensionAndVersion(".appimage"),
     ),
-    fileReadiness(
-      "linux-sha256sums",
-      "Linux SHA256SUMS",
-      "release:linux:checksums",
-      artifactDir("release", "bundle", "SHA256SUMS"),
-    ),
+    linuxChecksumsReadiness(),
     artifactReadiness(
       "updater-appimage-signature",
       "Tauri updater AppImage signature",
       "release:updater:local",
       [artifactDir("release", "bundle", "appimage")],
-      hasExtension(".appimage.sig"),
+      hasExtensionAndVersion(".appimage.sig"),
     ),
-    fileReadiness(
-      "updater-latest-json",
-      "Tauri updater latest.json",
-      "release:updater:manifest",
-      path.join(repoRoot, "target", "updater", "latest.json"),
-    ),
+    updaterManifestReadiness(),
   ];
 }
 
@@ -273,15 +275,108 @@ function artifactReadiness(id, label, buildScript, directories, matcher) {
   };
 }
 
-function fileReadiness(id, label, buildScript, file) {
-  const found = existsSync(file) && statSync(file).isFile() && statSync(file).size > 0;
+function linuxChecksumsReadiness() {
+  const file = artifactDir("release", "bundle", "SHA256SUMS");
+  const command = packageScripts["release:linux:checksums"]
+    ? "pnpm run release:linux:checksums"
+    : null;
+  if (!existsSync(file) || !statSync(file).isFile() || statSync(file).size <= 0) {
+    return {
+      id: "linux-sha256sums",
+      label: "Linux SHA256SUMS",
+      status: "missing",
+      description: "Linux SHA256SUMS generated release file.",
+      command,
+      detail: `missing ${path.relative(repoRoot, file)}`,
+    };
+  }
+
+  const artifactRoot = artifactDir("release", "bundle");
+  const currentArtifacts = [
+    ...collectArtifacts(path.join(artifactRoot, "deb"), hasExtensionAndVersion(".deb")),
+    ...collectArtifacts(path.join(artifactRoot, "rpm"), hasExtensionAndVersion(".rpm")),
+    ...collectArtifacts(path.join(artifactRoot, "appimage"), hasExtensionAndVersion(".appimage")),
+  ];
+  const expectedEntries = currentArtifacts
+    .map((artifact) => path.relative(path.dirname(file), artifact))
+    .sort();
+  const checksumText = readFileSync(file, "utf8");
+  const missingEntries = expectedEntries.filter((entry) => !checksumText.includes(`  ${entry}`));
+
   return {
-    id,
-    label,
-    status: found ? "ready" : "missing",
-    description: `${label} generated release file.`,
-    command: packageScripts[buildScript] ? `pnpm run ${buildScript}` : null,
-    detail: found ? path.relative(repoRoot, file) : `missing ${path.relative(repoRoot, file)}`,
+    id: "linux-sha256sums",
+    label: "Linux SHA256SUMS",
+    status: expectedEntries.length > 0 && missingEntries.length === 0 ? "ready" : "missing",
+    description: "Linux SHA256SUMS generated release file.",
+    command,
+    detail:
+      expectedEntries.length === 0
+        ? `no current-version Linux artifacts found under ${path.relative(repoRoot, artifactRoot)}`
+        : missingEntries.length === 0
+          ? `${path.relative(repoRoot, file)} covers ${expectedEntries.join(", ")}`
+          : `missing checksum entries: ${missingEntries.join(", ")}`,
+  };
+}
+
+function updaterManifestReadiness() {
+  const file = path.join(repoRoot, "target", "updater", "latest.json");
+  const command = packageScripts["release:updater:manifest"]
+    ? "pnpm run release:updater:manifest"
+    : null;
+  if (!existsSync(file) || !statSync(file).isFile() || statSync(file).size <= 0) {
+    return {
+      id: "updater-latest-json",
+      label: "Tauri updater latest.json",
+      status: "missing",
+      description: "Tauri updater latest.json generated release file.",
+      command,
+      detail: `missing ${path.relative(repoRoot, file)}`,
+    };
+  }
+
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(file, "utf8"));
+  } catch (error) {
+    return {
+      id: "updater-latest-json",
+      label: "Tauri updater latest.json",
+      status: "missing",
+      description: "Tauri updater latest.json generated release file.",
+      command,
+      detail: `invalid JSON: ${error.message}`,
+    };
+  }
+
+  const platforms =
+    manifest && typeof manifest.platforms === "object" && manifest.platforms
+      ? Object.entries(manifest.platforms)
+      : [];
+  const invalidPlatform = platforms.find(([, entry]) => {
+    if (!entry || typeof entry !== "object") {
+      return true;
+    }
+    return (
+      typeof entry.url !== "string" ||
+      !entry.url.includes(packageJson.version) ||
+      typeof entry.signature !== "string" ||
+      entry.signature.trim().length < 40
+    );
+  });
+  const ready =
+    manifest?.version === packageJson.version && platforms.length > 0 && !invalidPlatform;
+
+  return {
+    id: "updater-latest-json",
+    label: "Tauri updater latest.json",
+    status: ready ? "ready" : "missing",
+    description: "Tauri updater latest.json generated release file.",
+    command,
+    detail: ready
+      ? `${path.relative(repoRoot, file)} version=${manifest.version} platforms=${platforms
+          .map(([target]) => target)
+          .join(", ")}`
+      : `manifest must use version ${packageJson.version}, include at least one platform, and point at current signed artifacts`,
   };
 }
 
@@ -519,6 +614,14 @@ function summarize(items) {
   return summary;
 }
 
+function inScopeItems(readinessReport) {
+  return [
+    ...readinessReport.localChecks,
+    ...readinessReport.artifacts,
+    ...readinessReport.externalPrerequisites,
+  ];
+}
+
 function nextActions(localChecks, artifacts, externalPrerequisites) {
   const actions = [];
   const missingLocal = localChecks.filter((item) => item.status === "missing");
@@ -607,6 +710,11 @@ function hasExtension(extension) {
   return (file) => file.toLowerCase().endsWith(extension);
 }
 
+function hasExtensionAndVersion(extension) {
+  return (file) =>
+    hasExtension(extension)(file) && path.basename(file).includes(packageJson.version);
+}
+
 function envSet(envNames) {
   return envNames.every((name) => envIsSet(name));
 }
@@ -663,6 +771,8 @@ Options:
   --json             Print machine-readable JSON.
   --check            Validate report generation and local script wiring only.
   --require-ready    Exit non-zero when missing repo-local items are reported.
+  --require-publishable
+                     Exit non-zero when any in-scope item is not ready.
   --scope=<scope>    Release scope: github (default) or all.
 
 This report is intentionally read-only. It does not build artifacts, run GitHub

@@ -86,6 +86,16 @@ Upload these files to the GitHub Release:
 - `src-tauri/target/release/bundle/appimage/*.AppImage.sig`
 - `src-tauri/target/release/bundle/SHA256SUMS`
 
+Before uploading the first GitHub Releases batch, run the local read-only gate:
+
+```bash
+pnpm run release:readiness:github:ready
+```
+
+It fails if the Linux packages, checksums, AppImage updater signature,
+`latest.json`, or updater prerequisites are still missing for the GitHub-only
+release scope.
+
 After the release is published, verify the public updater surface:
 
 ```bash
