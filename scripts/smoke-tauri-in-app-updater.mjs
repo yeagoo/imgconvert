@@ -27,6 +27,8 @@ const options = {
   requireGui: false,
   timeoutMs: 240_000,
   downloadTimeoutMs: 600_000,
+  initialSettleMs: 8_000,
+  updateDialogWaitMs: 15_000,
   updateButtonOffsetX: 70,
   updateButtonOffsetY: 30,
   installButtonOffsetX: 165,
@@ -254,12 +256,13 @@ async function runGuiUpdaterSmoke(oldArtifactPath, expectedHash) {
 
   try {
     const windowId = await waitForWindow(appEnv);
-    await sleep(2_000);
+    await sleep(options.initialSettleMs);
     const geometry = windowGeometry(windowId, appEnv);
     clickUpdateButton(windowId, geometry, appEnv);
+    await sleep(options.updateDialogWaitMs);
     captureScreenshot(appEnv, "after-update-click.png");
-    await sleep(8_000);
     clickInstallButton(windowId, geometry, appEnv);
+    await sleep(2_000);
     captureScreenshot(appEnv, "after-install-click.png");
     await waitForUpdatedArtifact(oldArtifactPath, expectedHash, app, stdout, stderr, appEnv);
     closeImgConvertWindows(appEnv);
