@@ -31,8 +31,8 @@ const options = {
   updateDialogWaitMs: 15_000,
   updateButtonOffsetX: 70,
   updateButtonOffsetY: 30,
-  installButtonOffsetX: 165,
-  installButtonOffsetY: 125,
+  installButtonOffsetX: 200,
+  installButtonOffsetY: 82,
 };
 
 for (const arg of process.argv.slice(2)) {
