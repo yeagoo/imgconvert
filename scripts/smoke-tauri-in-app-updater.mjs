@@ -298,7 +298,7 @@ async function startXvfb() {
 async function waitForWindow(env) {
   const started = Date.now();
   while (Date.now() - started < 30_000) {
-    const result = runTool("xdotool", ["search", "--name", "ImgConvert"], env, {
+    const result = runTool("xdotool", ["search", "--onlyvisible", "--name", "ImgConvert"], env, {
       allowFailure: true,
     });
     const ids = result.stdout
@@ -306,16 +306,25 @@ async function waitForWindow(env) {
       .split(/\s+/)
       .map((id) => id.trim())
       .filter(Boolean);
-    if (ids.length > 0) {
-      return ids.at(-1);
+    for (const id of ids.reverse()) {
+      const geometry = windowGeometry(id, env, { allowFailure: true });
+      if (geometry && geometry.WIDTH >= 640 && geometry.HEIGHT >= 480) {
+        console.log(`using ImgConvert window ${id}: ${geometry.WIDTH}x${geometry.HEIGHT}`);
+        return id;
+      }
     }
     await sleep(500);
   }
   fail("timed out waiting for ImgConvert window");
 }
 
-function windowGeometry(windowId, env) {
-  const result = runTool("xdotool", ["getwindowgeometry", "--shell", windowId], env);
+function windowGeometry(windowId, env, { allowFailure = false } = {}) {
+  const result = runTool("xdotool", ["getwindowgeometry", "--shell", windowId], env, {
+    allowFailure,
+  });
+  if (allowFailure && result.status !== 0) {
+    return null;
+  }
   const fields = Object.fromEntries(
     result.stdout
       .trim()
@@ -326,6 +335,9 @@ function windowGeometry(windowId, env) {
   );
   for (const key of ["WIDTH", "HEIGHT"]) {
     if (!Number.isFinite(fields[key]) || fields[key] <= 0) {
+      if (allowFailure) {
+        return null;
+      }
       fail(`xdotool returned invalid window geometry: ${result.stdout}`);
     }
   }
@@ -333,35 +345,25 @@ function windowGeometry(windowId, env) {
 }
 
 function clickUpdateButton(windowId, geometry, env) {
-  runTool(
-    "xdotool",
-    [
-      "mousemove",
-      "--window",
-      windowId,
-      String(geometry.WIDTH - options.updateButtonOffsetX),
-      String(options.updateButtonOffsetY),
-      "click",
-      "1",
-    ],
-    env,
-  );
+  const x = relativeCoordinate(geometry.WIDTH - options.updateButtonOffsetX, geometry.WIDTH);
+  const y = relativeCoordinate(options.updateButtonOffsetY, geometry.HEIGHT);
+  runTool("xdotool", ["mousemove", "--window", windowId, String(x), String(y), "click", "1"], env);
 }
 
 function clickInstallButton(windowId, geometry, env) {
-  runTool(
-    "xdotool",
-    [
-      "mousemove",
-      "--window",
-      windowId,
-      String(Math.round(geometry.WIDTH / 2 + options.installButtonOffsetX)),
-      String(Math.round(geometry.HEIGHT / 2 + options.installButtonOffsetY)),
-      "click",
-      "1",
-    ],
-    env,
+  const x = relativeCoordinate(
+    Math.round(geometry.WIDTH / 2 + options.installButtonOffsetX),
+    geometry.WIDTH,
   );
+  const y = relativeCoordinate(
+    Math.round(geometry.HEIGHT / 2 + options.installButtonOffsetY),
+    geometry.HEIGHT,
+  );
+  runTool("xdotool", ["mousemove", "--window", windowId, String(x), String(y), "click", "1"], env);
+}
+
+function relativeCoordinate(value, max) {
+  return Math.min(Math.max(1, value), Math.max(1, max - 1));
 }
 
 async function waitForUpdatedArtifact(artifactPath, expectedHash, app, stdout, stderr, env) {
