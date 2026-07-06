@@ -8,6 +8,8 @@
 **本地优先**的跨平台图片批量转换与压缩工具。**Linux 优先**(Debian/Ubuntu/Fedora),后续扩展 macOS / Windows(arm64 + amd64)。
 面向开发者、设计师、站长与内容创作者:拖拽即转,优先支持 AVIF/WebP/JPEG/PNG 与有损/无损压缩,**所有处理默认在本机完成,不上传图片**。
 
+> **第一期发布范围**:只在 **GitHub Releases** 发布 Linux 直发包(`.deb` / `.rpm` / AppImage)与 Tauri updater 资产;暂不提交 Flathub、Mac App Store 或 Microsoft Store。商店/Flathub 相关脚本和护栏保留为后续阶段使用。
+
 ## ✨ 功能
 
 > 状态图例:✅ 已实现 · 🚧 需要真实平台/账号/证书继续验收(详见 [docs/ROADMAP.md](docs/ROADMAP.md))
@@ -18,8 +20,8 @@
 - ✅ 压缩策略:skip-if-larger、多候选取最小、JPEG/WebP 自动质量、代际损失防护、结果缓存。
 - ✅ 保真能力:EXIF orientation 真旋正、ICC/EXIF/XMP/IPTC 保留或剥离、Display P3 ICC 测试、显式转 sRGB。
 - ✅ 可选 HEIC 导入:Linux 外部 helper/Flatpak extension、macOS ImageIO、Windows WIC 探测;主程序不内置 HEIC codec,不输出 HEIC。
-- ✅ 发布工程:Linux `.deb/.rpm/AppImage`、Flatpak manifest、Tauri updater 脚本、macOS/Windows repo 侧打包与签名入口、质量/许可/fuzz/benchmark guardrails。
-- 🚧 真实发布验收:Apple Developer 签名/公证/MAS、Windows 代码签名/MSIX/Store、Flathub 审核、真实 updater 发布、真实图片 corpus 长跑 fuzz、macOS/Windows benchmark 数据。
+- ✅ 发布工程:Linux `.deb/.rpm/AppImage`、GitHub Releases updater、Flatpak manifest、macOS/Windows repo 侧打包与签名入口、质量/许可/fuzz/benchmark guardrails。
+- 🚧 真实发布验收:第一期只需 GitHub Release 发布链路;Apple Developer 签名/公证/MAS、Windows 代码签名/MSIX/Store、Flathub 审核、真实图片 corpus 长跑 fuzz、macOS/Windows benchmark 数据均后移。
 
 > ✅ **架构已切换(2026-06-30)**:引擎从 libvips CLI 改为**进程内宽松许可 Rust 编解码 crate + 后续平台系统 HEIC**(混合架构),许可证为 **Apache-2.0**,目标上架三大商店。详见 [docs/ROADMAP.md](docs/ROADMAP.md) / [docs/ENGINE.md](docs/ENGINE.md)。
 
@@ -29,7 +31,7 @@
 - ✅ **P1/P1.5**:文件导入、并发批量、进度/取消、缩略图、剪贴板导入、文件可靠性、可选 HEIC helper/plugin 已落地。
 - ✅ **P2**:高级压缩、metadata 保真、色彩管线 v2、AVIF 真无损、语义 metadata、图像质量测试、fuzz/corpus/replay/minimize 已落地。
 - ✅ **P3 repo 侧**:Linux 发布闭环、Flatpak/HEIC extension、Tauri updater、macOS/Windows 打包与签名脚本、GitHub Actions 成本护栏已落地。
-- 🚧 **外部验收**:真实 Apple/Windows 签名与商店提交、Flathub 审核、真实 updater 发布、真实样张 corpus 与 macOS/Windows benchmark 仍依赖外部账号、证书或设备。
+- 🚧 **外部验收**:第一期 GitHub Releases/updater 发布链路优先;真实 Apple/Windows 签名与商店提交、Flathub 审核、真实样张 corpus 与 macOS/Windows benchmark 后移。
 
 ## 🛠️ 技术栈
 
@@ -50,7 +52,8 @@ pnpm install           # 前端依赖
 pnpm run tauri dev     # 开发
 pnpm run tauri build   # 打 .app / .dmg
 pnpm run check         # 前端类型检查 + lint
-pnpm run release:readiness # 只读发布状态报告,不构建/不联网/不触发 Actions
+pnpm run release:readiness # GitHub-only 第一期只读发布状态报告,不构建/不联网/不触发 Actions
+pnpm run release:readiness:all # 查看商店/Flathub/跨平台长期发布项
 pnpm run release:platform:check # 架构/发布/文档静态护栏
 ```
 

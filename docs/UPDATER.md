@@ -12,6 +12,10 @@ https://github.com/yeagoo/imgconvert/releases/latest/download/latest.json
 The default `src-tauri/tauri.conf.json` intentionally does not contain updater
 keys or endpoints. Release builds opt in by generating an extra Tauri config.
 
+For the first public release batch, GitHub Releases is the only distribution
+channel: Linux `.deb`, `.rpm`, AppImage, AppImage signature, checksums, and
+`latest.json`. Flathub, MAS, MSIX, and other store channels remain deferred.
+
 ## One-time key setup
 
 Generate the updater signing key pair on a trusted machine:
@@ -139,6 +143,7 @@ Before uploading assets, the workflow executes the signed AppImage with
 `IMGCONVERT_PACKAGE_CONVERT_SMOKE=1`, so the published updater artifact has
 already passed the same hidden conversion smoke used by Linux package tests.
 
-Flatpak updates remain managed by Flathub. `.deb` and `.rpm` updates remain
-distribution/package-channel work; the Tauri updater is for direct-distribution
-artifacts such as AppImage, macOS `.app.tar.gz`, and Windows installers.
+Flatpak updates remain managed by Flathub once that channel is opened. `.deb`
+and `.rpm` updates remain manual GitHub Release downloads in the first batch;
+the Tauri updater is for direct-distribution artifacts such as AppImage, macOS
+`.app.tar.gz`, and Windows installers.

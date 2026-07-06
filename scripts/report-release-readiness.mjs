@@ -11,6 +11,7 @@ const options = {
   json: false,
   check: false,
   requireReady: false,
+  scope: "github",
 };
 
 for (const arg of process.argv.slice(2)) {
@@ -22,6 +23,11 @@ for (const arg of process.argv.slice(2)) {
     options.check = true;
   } else if (arg === "--require-ready") {
     options.requireReady = true;
+  } else if (arg.startsWith("--scope=")) {
+    options.scope = arg.slice("--scope=".length);
+    if (!["github", "all"].includes(options.scope)) {
+      fail(`unsupported scope: ${options.scope}`);
+    }
   } else if (arg === "--help" || arg === "-h") {
     printHelp();
     process.exit(0);
@@ -56,7 +62,67 @@ if (options.requireReady && report.summary.blocking > 0) {
 }
 
 function buildReport() {
-  const localChecks = [
+  const localChecks = githubLocalChecks();
+  const artifacts = githubArtifacts();
+  const externalPrerequisites = [updaterPrerequisite(), updaterUpgradeSmokePrerequisite()];
+  const deferredPrerequisites = [];
+
+  if (options.scope === "all") {
+    localChecks.splice(4, 0, ...storeAndFlatpakLocalChecks());
+    artifacts.push(...platformArtifacts());
+    externalPrerequisites.unshift(
+      macosDirectPrerequisite(),
+      macosMasPrerequisite(),
+      windowsSigningPrerequisite(),
+      windowsStorePrerequisite(),
+    );
+    externalPrerequisites.push(
+      flathubMainPrerequisite(),
+      flathubHeicPrerequisite(),
+      macosBenchmarkPrerequisite(),
+      windowsBenchmarkPrerequisite(),
+      realCorpusFuzzPrerequisite(),
+    );
+  } else {
+    deferredPrerequisites.push(
+      flathubMainPrerequisite(),
+      flathubHeicPrerequisite(),
+      macosDirectPrerequisite(),
+      macosMasPrerequisite(),
+      windowsSigningPrerequisite(),
+      windowsStorePrerequisite(),
+      macosBenchmarkPrerequisite(),
+      windowsBenchmarkPrerequisite(),
+      realCorpusFuzzPrerequisite(),
+    );
+  }
+
+  const allItems = [...localChecks, ...artifacts, ...externalPrerequisites];
+  const summary = summarize(allItems);
+
+  return {
+    generatedAt: new Date().toISOString(),
+    scope: options.scope,
+    project: {
+      packageName: packageJson.name,
+      version: packageJson.version,
+      productName: tauriConfig.productName,
+      identifier: tauriConfig.identifier,
+      platform: process.platform,
+      arch: process.arch,
+      osRelease: os.release(),
+    },
+    summary,
+    localChecks,
+    artifacts,
+    externalPrerequisites,
+    deferredPrerequisites,
+    nextActions: nextActions(localChecks, artifacts, externalPrerequisites),
+  };
+}
+
+function githubLocalChecks() {
+  return [
     commandReadiness("docs:check", "README and public status text must match the current roadmap."),
     commandReadiness("architecture:check", "Main architecture and license boundary guardrails."),
     commandReadiness("ci:cost:check", "Manual-only GitHub Actions and paid-runner defaults."),
@@ -64,18 +130,9 @@ function buildReport() {
       "release:platform:check",
       "macOS/Windows/Flatpak/updater static release guardrails.",
     ),
-    commandReadiness(
-      "release:flatpak:verify",
-      "Flatpak main manifest and optional HEIC extension static checks.",
-    ),
-    commandReadiness(
-      "release:flathub:metadata",
-      "Flathub AppStream metadata and optional local linter entrypoint.",
-    ),
-    commandReadiness(
-      "release:flathub:pr",
-      "Generate main package and HEIC extension PR workspaces for Flathub review.",
-    ),
+    commandReadiness("release:linux:verify", "Verify GitHub Release Linux package artifacts."),
+    commandReadiness("release:updater:verify", "Verify Tauri updater latest.json and signatures."),
+    commandReadiness("release:updater:smoke", "Verify public GitHub Release updater assets."),
     commandReadiness(
       "release:updater:upgrade-smoke:eligibility",
       "Verify old/new updater release metadata before the real GUI upgrade smoke.",
@@ -88,10 +145,29 @@ function buildReport() {
       "fuzz:smoke",
       "Low-cost fuzz seed preparation, target compile, and corpus replay.",
     ),
+  ];
+}
+
+function storeAndFlatpakLocalChecks() {
+  return [
+    commandReadiness(
+      "release:flatpak:verify",
+      "Flatpak main manifest and optional HEIC extension static checks.",
+    ),
+    commandReadiness(
+      "release:flathub:metadata",
+      "Flathub AppStream metadata and optional local linter entrypoint.",
+    ),
+    commandReadiness(
+      "release:flathub:pr",
+      "Generate main package and HEIC extension PR workspaces for Flathub review.",
+    ),
     commandReadiness("bench:platform", "Local platform benchmark report generator."),
   ];
+}
 
-  const artifacts = [
+function githubArtifacts() {
+  return [
     artifactReadiness(
       "linux-deb",
       "Linux .deb",
@@ -113,6 +189,30 @@ function buildReport() {
       [artifactDir("release", "bundle", "appimage")],
       hasExtension(".appimage"),
     ),
+    fileReadiness(
+      "linux-sha256sums",
+      "Linux SHA256SUMS",
+      "release:linux:checksums",
+      artifactDir("release", "bundle", "SHA256SUMS"),
+    ),
+    artifactReadiness(
+      "updater-appimage-signature",
+      "Tauri updater AppImage signature",
+      "release:updater:local",
+      [artifactDir("release", "bundle", "appimage")],
+      hasExtension(".appimage.sig"),
+    ),
+    fileReadiness(
+      "updater-latest-json",
+      "Tauri updater latest.json",
+      "release:updater:manifest",
+      path.join(repoRoot, "target", "updater", "latest.json"),
+    ),
+  ];
+}
+
+function platformArtifacts() {
+  return [
     artifactReadiness(
       "macos-dmg",
       "macOS DMG",
@@ -141,48 +241,7 @@ function buildReport() {
       [artifactDir("release", "bundle", "nsis")],
       hasExtension(".exe"),
     ),
-    fileReadiness(
-      "updater-latest-json",
-      "Tauri updater latest.json",
-      "release:updater:manifest",
-      path.join(repoRoot, "target", "updater", "latest.json"),
-    ),
   ];
-
-  const externalPrerequisites = [
-    macosDirectPrerequisite(),
-    macosMasPrerequisite(),
-    windowsSigningPrerequisite(),
-    windowsStorePrerequisite(),
-    updaterPrerequisite(),
-    updaterUpgradeSmokePrerequisite(),
-    flathubMainPrerequisite(),
-    flathubHeicPrerequisite(),
-    macosBenchmarkPrerequisite(),
-    windowsBenchmarkPrerequisite(),
-    realCorpusFuzzPrerequisite(),
-  ];
-
-  const allItems = [...localChecks, ...artifacts, ...externalPrerequisites];
-  const summary = summarize(allItems);
-
-  return {
-    generatedAt: new Date().toISOString(),
-    project: {
-      packageName: packageJson.name,
-      version: packageJson.version,
-      productName: tauriConfig.productName,
-      identifier: tauriConfig.identifier,
-      platform: process.platform,
-      arch: process.arch,
-      osRelease: os.release(),
-    },
-    summary,
-    localChecks,
-    artifacts,
-    externalPrerequisites,
-    nextActions: nextActions(localChecks, artifacts, externalPrerequisites),
-  };
 }
 
 function commandReadiness(scriptName, description) {
@@ -352,6 +411,9 @@ function updaterPrerequisite() {
 }
 
 function updaterUpgradeSmokePrerequisite() {
+  const documentedPass = readText("docs/DEVLOG.md").includes(
+    `Tauri in-app updater smoke passed: 0.1.0 -> ${packageJson.version}`,
+  );
   const guiReady =
     process.platform === "linux" &&
     process.arch === "x64" &&
@@ -360,13 +422,15 @@ function updaterUpgradeSmokePrerequisite() {
   return {
     id: "tauri-in-app-updater-smoke",
     label: "Tauri in-app updater upgrade smoke",
-    status: guiReady ? "ready" : "external",
+    status: guiReady || documentedPass ? "ready" : "external",
     description:
       "Launches the old x86_64 AppImage, clicks the app update dialog, waits for replacement, then runs package smoke.",
     command: "pnpm run release:updater:upgrade-smoke",
-    detail: guiReady
-      ? "current host has linux/x64, Xvfb, and xdotool"
-      : "requires linux/x64 desktop runner with Xvfb and xdotool; use the manual Updater Upgrade Smoke workflow",
+    detail: documentedPass
+      ? `GitHub workflow pass for 0.1.0 -> ${packageJson.version} is recorded in docs/DEVLOG.md`
+      : guiReady
+        ? "current host has linux/x64, Xvfb, and xdotool"
+        : "requires linux/x64 desktop runner with Xvfb and xdotool; use the manual Updater Upgrade Smoke workflow",
   };
 }
 
@@ -483,7 +547,7 @@ function nextActions(localChecks, artifacts, externalPrerequisites) {
 function printReport(readinessReport) {
   console.log("ImgConvert release readiness");
   console.log(
-    `version=${readinessReport.project.version} product=${readinessReport.project.productName} platform=${readinessReport.project.platform}/${readinessReport.project.arch}`,
+    `scope=${readinessReport.scope} version=${readinessReport.project.version} product=${readinessReport.project.productName} platform=${readinessReport.project.platform}/${readinessReport.project.arch}`,
   );
   console.log(
     `summary ready=${readinessReport.summary.ready} missing=${readinessReport.summary.missing} external=${readinessReport.summary.external}`,
@@ -492,6 +556,9 @@ function printReport(readinessReport) {
   printSection("Local checks", readinessReport.localChecks);
   printSection("Artifacts", readinessReport.artifacts);
   printSection("External prerequisites", readinessReport.externalPrerequisites);
+  if (readinessReport.deferredPrerequisites.length > 0) {
+    printSection("Deferred for this scope", readinessReport.deferredPrerequisites);
+  }
 
   console.log("\nNext actions:");
   for (const action of readinessReport.nextActions) {
@@ -582,7 +649,11 @@ function countSupportedCorpusFiles(dir, limit) {
 }
 
 function readJson(relativePath) {
-  return JSON.parse(readFileSync(path.join(repoRoot, relativePath), "utf8"));
+  return JSON.parse(readText(relativePath));
+}
+
+function readText(relativePath) {
+  return readFileSync(path.join(repoRoot, relativePath), "utf8");
 }
 
 function printHelp() {
@@ -592,6 +663,7 @@ Options:
   --json             Print machine-readable JSON.
   --check            Validate report generation and local script wiring only.
   --require-ready    Exit non-zero when missing repo-local items are reported.
+  --scope=<scope>    Release scope: github (default) or all.
 
 This report is intentionally read-only. It does not build artifacts, run GitHub
 Actions, perform network requests, or print secret values.

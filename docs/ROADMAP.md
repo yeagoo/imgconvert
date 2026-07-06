@@ -7,7 +7,7 @@
 
 > ⚠️ **架构决策(2026-06-29 转向「混合架构」;2026-06-29 二轮:三方评审 + 用户拍板后修订)**:
 > - **引擎**:放弃 libvips CLI,改为**进程内宽松许可 Rust 编解码 crate**——JPEG `mozjpeg`、PNG `oxipng`、WebP `webp`(libwebp)、**AVIF `libavif-sys`(rav1e 有损 + aom 无损,采 DropWebP 路线)**、解码/容器 `image`。C 编解码器构建期静态链接。**主程序不内置 HEIC**;macOS/Windows 可走系统原生,另预留独立进程 HEIC 插件/helper(单独 LGPL 分发,decode-only)。
-> - **平台优先级(已改)**:**Linux 优先**(Debian/Ubuntu/Fedora;.deb/.rpm/AppImage + Flathub);macOS、Windows 商店为后续阶段。**但架构必须为商店留门**:主程序核心无子进程、纯宽松许可、文件访问抽象成「用户显式授权目录」(兼容 macOS security-scoped bookmark / Flatpak portal)。可选 HEIC helper 属主包外直发增强,商店构建默认禁用。
+> - **平台优先级(已改)**:**Linux 优先**。第一期只在 **GitHub Releases** 发布 `.deb/.rpm/AppImage` 与 updater 资产;Flathub、macOS、Windows 商店均后移。**但架构必须为商店留门**:主程序核心无子进程、纯宽松许可、文件访问抽象成「用户显式授权目录」(兼容 macOS security-scoped bookmark / Flatpak portal)。可选 HEIC helper 属主包外直发增强,商店构建默认禁用。
 > - **许可证**:**Apache-2.0**(已从 AGPL 切换完毕);`deny.toml` 禁止 GPL/AGPL/LGPL;`imagequant`(GPL)→ `color_quant`,`dssim`(AGPL)→ `ssimulacra2`。
 > - **格式(v1)**:JPEG/PNG/WebP/AVIF(全平台 crate);HEIC 主包不内置,可选插件作为后续增强;TIFF/JXL 推后。
 > - **三方评审已纳入的修正**:见文末「评审修正清单」。
@@ -21,7 +21,7 @@
 | **P1** | 拖拽 + 批量 + 真实转换 | 拖拽、并发批量(rav1e `threads=1` 防 oversubscribe)、进度(Channel)、取消 |
 | **P1.5** | 可选 codec 插件 | HEIC 外部 helper 协议、系统依赖探测、decode-only 插件 |
 | **P2** | 高级压缩与保真 | 自动质量(**仅 JPEG/WebP**)、ICC/EXIF/XMP 透传、代际防护 |
-| **P3** | 发布(Linux 优先) | **.deb/.rpm/AppImage + Flathub**;macOS(直分发→MAS)、Windows(→MS Store)后续阶段 |
+| **P3** | 发布(Linux 优先) | 第一期 **GitHub Releases `.deb/.rpm/AppImage` + updater**;Flathub、macOS(直分发→MAS)、Windows(→MS Store)后续阶段 |
 
 ---
 
@@ -168,11 +168,11 @@
 
 ---
 
-## P3 — 发布(Linux 优先,商店留门)
+## P3 — 发布(Linux 优先,GitHub Releases 第一期)
 
-> 评审一致:个人/小团队不要四渠道并行。先 Linux 直发,验证需求后逐步上 macOS / Windows 商店。
+> 评审一致:个人/小团队不要四渠道并行。第一期只做 GitHub Releases 直发包,验证需求后再逐步推进 Flathub、macOS / Windows 直发与商店。
 
-**v1(Linux):**
+**第一期(GitHub Releases only):**
 - [x] **CI 矩阵第一批**:GitHub Actions Tauri build smoke 改为 Linux **amd64 + arm64** 原生 runner;继续跑 C 工具链预检(NASM + cmake/meson/ninja)并上传 debug `.deb` artifact。
 - [x] **CI/release 第二批**:新增 Linux release workflow(tag `v*`/手动触发),在 amd64 + arm64 上构建 release `.deb/.rpm/AppImage` 并上传 artifact;CI debug `.deb` 构建后会安装并 `xvfb-run` 启动 smoke。
 - [x] **CI 矩阵扩展**:release workflow 在 amd64 + arm64 构建后跑 Docker/runtime smoke matrix:Ubuntu `.deb`、Debian `.deb`、Fedora `.rpm`、Ubuntu AppImage;脚本支持 `xvfb-run` 与裸 `Xvfb`,AppImage 使用 extract-and-run 规避容器 FUSE 缺失。
@@ -181,9 +181,9 @@
 - [x] **打包元数据/校验第二批**:release 脚本先清理旧 bundle,artifact verifier 校验版本、`.deb` 依赖、包内二进制和 `.desktop` 元数据;`.desktop` 已补 `Graphics;Photography;` 分类;release 会生成 `SHA256SUMS`。
 - [x] **打包实测入口**:**.deb(Debian/Ubuntu)+ .rpm(Fedora)+ AppImage** 干净发行版安装/启动 smoke 已接入 `pnpm run release:linux:smoke:docker`;安装包内真实转换 smoke 已通过隐藏 `IMGCONVERT_PACKAGE_CONVERT_SMOKE=1` 二进制入口接入 Docker matrix。
 - [x] **Linux Release Candidate 实测闭环**:本机 `pnpm run release:linux` 生成 `.deb/.rpm/AppImage + SHA256SUMS`;artifact verifier 解包检查 `.deb` 与 AppImage 的二进制/desktop/GLIBC/根 symlink,AppImage scrub 移除 deny-list 系统库;Docker matrix 实测 Ubuntu `.deb`、Debian 13 `.deb`、Fedora `.rpm`、Ubuntu AppImage 启动均通过。
-- [x] **Flathub 最后一公里闭环**:Flatpak manifest + desktop/metainfo + `release:flatpak:verify` 已落地;manifest 不申请 host/home filesystem,主包默认 `IMGCONVERT_DISABLE_EXTERNAL_CODECS=1`,不含 HEIC。manifest 已从仓库根 `dir` source 改为 `release:flatpak:prepare` 生成的 release archive,并在 archive 内带 vendored Corepack/pnpm 与 Cargo/npm inputs;本地/CI 用 `path:` source,Flathub PR 可用 `--source-url=` 切换为 release `url:` source。Flatpak 发布 app-id 使用 `io.github.yeagoo.imgconvert` 以通过 Flathub 官方上游身份 lint,Tauri/macOS bundle identifier 仍保留 `com.ivmm.imgconvert`。`pnpm run release:flatpak:smoke` 已完成本机真实 `flatpak-builder` 构建、user install、`flatpak-builder --run` 和 `flatpak run` 包内转换 smoke;manifest 已升到 GNOME 50 runtime,AppStream metadata license 改为 `CC0-1.0`,aarch64 Flatpak 的 `libdav1d-sys` Meson cross file 在 prepare 阶段 patch 并同步 Cargo checksum。`release:flathub:metadata` / `release:flathub:metadata:lint` / `release:flathub:main-pr` 现在覆盖 Flathub AppStream 元数据、linter 入口和主包 PR 工作目录生成。可选 HEIC extension 真包 repo 侧已落地:主包只允许 `/app/extensions/codecs` 下的 Flatpak 扩展 manifest,不扫描宿主 PATH/XDG helper;`packaging/flatpak/extensions/heic/` 提供 `io.github.yeagoo.imgconvert.Codecs.Heic` decode-only manifest,固定 `libde265`/`libheif` 源码 tarball + sha256,关闭 encoding/x265/GPL-only 路径并安装 LGPL notice;`release:flatpak:heic:download-check` 可在未安装主 app runtime 时校验上游源码 URL/sha256,`release:flathub:heic-pr` 生成单独 addon PR 工作目录,`release:flatpak:heic:real-smoke` 可把主包与 extension 装入同一本地 repo 后用真实 HEIC 样张做沙盒内转换 smoke。真实 Flathub 主包/addon 审核、screenshot 远端 URL 发布和专利/频道接受仍需发布阶段完成。
+- [x] **Flathub repo 侧闭环(后续提交,不阻塞第一期)**:Flatpak manifest + desktop/metainfo + `release:flatpak:verify` 已落地;manifest 不申请 host/home filesystem,主包默认 `IMGCONVERT_DISABLE_EXTERNAL_CODECS=1`,不含 HEIC。manifest 已从仓库根 `dir` source 改为 `release:flatpak:prepare` 生成的 release archive,并在 archive 内带 vendored Corepack/pnpm 与 Cargo/npm inputs;本地/CI 用 `path:` source,Flathub PR 可用 `--source-url=` 切换为 release `url:` source。Flatpak 发布 app-id 使用 `io.github.yeagoo.imgconvert` 以通过 Flathub 官方上游身份 lint,Tauri/macOS bundle identifier 仍保留 `com.ivmm.imgconvert`。`pnpm run release:flatpak:smoke` 已完成本机真实 `flatpak-builder` 构建、user install、`flatpak-builder --run` 和 `flatpak run` 包内转换 smoke;manifest 已升到 GNOME 50 runtime,AppStream metadata license 改为 `CC0-1.0`,aarch64 Flatpak 的 `libdav1d-sys` Meson cross file 在 prepare 阶段 patch 并同步 Cargo checksum。`release:flathub:metadata` / `release:flathub:metadata:lint` / `release:flathub:main-pr` 现在覆盖 Flathub AppStream 元数据、linter 入口和主包 PR 工作目录生成。可选 HEIC extension 真包 repo 侧已落地:主包只允许 `/app/extensions/codecs` 下的 Flatpak 扩展 manifest,不扫描宿主 PATH/XDG helper;`packaging/flatpak/extensions/heic/` 提供 `io.github.yeagoo.imgconvert.Codecs.Heic` decode-only manifest,固定 `libde265`/`libheif` 源码 tarball + sha256,关闭 encoding/x265/GPL-only 路径并安装 LGPL notice;`release:flatpak:heic:download-check` 可在未安装主 app runtime 时校验上游源码 URL/sha256,`release:flathub:heic-pr` 生成单独 addon PR 工作目录,`release:flatpak:heic:real-smoke` 可把主包与 extension 装入同一本地 repo 后用真实 HEIC 样张做沙盒内转换 smoke。真实 Flathub 主包/addon 审核、screenshot 远端 URL 发布和专利/频道接受后移,不作为第一期 GitHub Release 阻塞项。
 - [x] **自动更新基础 + GitHub Releases 启用入口**:AppImage/.deb/.rpm release 产物生成 `SHA256SUMS`;Flatpak 更新由 Flathub 托管。Tauri updater 已注册并接应用内“应用更新”入口;`release:updater:prepare` 按 `TAURI_UPDATER_PUBKEY`/`TAURI_UPDATER_ENDPOINTS` 生成 release-only updater config,`release:linux:updater` 构建 scrub 后重签的 AppImage updater artifact,`release:updater:local` 可在本机默认读取 `~/.tauri/imgconvert-updater.key*` 后生成并校验 `target/updater/latest.json`,`release:updater:verify` 校验 manifest URL/平台/签名与本地产物一致,手动 `Updater Release` workflow 可上传 release assets。`release:updater:upgrade-smoke:eligibility` 验证旧/新 release 和签名,`release:updater:upgrade-smoke` / 手动 `Updater Upgrade Smoke` workflow 在 Linux x86_64 + Xvfb/xdotool 下执行真实应用内升级 smoke。默认 `tauri.conf.json` 不硬编码占位密钥或 endpoint。真实发布仍需要仓库 secrets 中的 Tauri updater public/private key。
-- [x] **发布 readiness 报告入口**:`pnpm run release:readiness` 本机只读汇总静态检查入口、已有 release artifact 和外部阻塞项(macOS notarization/MAS、Windows code signing/Store、Tauri updater keys、Flathub HEIC addon、Apple Silicon AVIF benchmark)。该入口不构建、不联网、不触发 paid runner,用于每次发布前快速判断“本地能继续什么 / 必须等什么”。
+- [x] **发布 readiness 报告入口**:`pnpm run release:readiness` 默认按第一期 GitHub-only 范围汇总静态检查、Linux artifact、updater artifact 和外部阻塞项;`pnpm run release:readiness:all` / `--scope=all` 才显示 Flathub、macOS、Windows、商店和长期 benchmark/corpus 项。该入口不构建、不联网、不触发 paid runner,用于每次发布前快速判断“本地能继续什么 / 必须等什么”。
 
 **后续阶段(留门,不阻塞 v1):**
 - [x] **macOS/Windows 发布护栏第一批**:新增 `release:platform:check` / `release:macos:check` / `release:windows:check` / `release:store-env:check`,静态校验发布元数据、平台图标、Apache-2.0 许可证和 store build 的 `IMGCONVERT_DISABLE_EXTERNAL_CODECS=1` 外部 helper 禁用机制。

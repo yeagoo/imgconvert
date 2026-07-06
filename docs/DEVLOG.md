@@ -5,6 +5,21 @@
 
 ---
 
+## 2026-07-06 — 第一期发布范围收敛:GitHub Releases only
+
+用户确认第一期不提交任何商店,只在 GitHub Releases 发布。Codex 同步 repo 侧口径:
+
+- **发布范围**:第一期只发布 Linux `.deb/.rpm/AppImage`、AppImage updater signature、`latest.json` 与 `SHA256SUMS`;Flathub、Mac App Store、Microsoft Store、MSIX、MAS notarization/submission 全部后移。
+- **readiness scope**:`pnpm run release:readiness` 默认改为 GitHub-only 范围;`pnpm run release:readiness:all` / `--scope=all` 才显示 Flathub、macOS、Windows、商店和长期 benchmark/corpus 项。
+- **文档同步**:README、ROADMAP、ENGINE、UPDATER 均明确“GitHub Releases first”,商店/Flathub 脚本仍保留为后续阶段和架构护栏,但不作为第一期发布阻塞项。
+
+边界:
+
+- 不移除 Flathub/MAS/MSIX/Windows signing 代码和 guardrail;它们继续作为后续发布留门。
+- GitHub-only 不等于无签名:AppImage updater artifact 仍需 Tauri updater key 签名,并上传 `.sig` 与 `latest.json`。
+
+---
+
 ## 2026-07-06 — Linux 0.1.1 包重建与 in-app updater 升级 smoke
 
 Codex 收尾 `v0.1.1` Linux 发布残留和真实 updater 升级验证入口:
